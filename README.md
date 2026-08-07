@@ -14,8 +14,8 @@ The app exposes the ideas from the
 - copy-on-write updates and structural sharing between versions
 - key lookup paths through delimiter keys
 - hash-pruned fast diffs
+- history-independent builds from different insertion orders
 - inserts, updates, deletes, random writes, and sequential growth
-- history independence, demonstrated with two real builds in opposite orders
 - chunk sizes, ranges, row counts, and full 20-byte addresses
 
 ## Run it in a browser
@@ -59,20 +59,25 @@ database on each page load so experiments are repeatable.
 
 ## Using the lab
 
-1. **Put row** inserts a new integer key or updates an existing value.
-2. **Find path** highlights the actual internal and leaf chunks visited for a
-   key lookup.
-3. **+ Random** and **+ 25 rows** make middle and right-edge growth easy to
-   compare.
+1. **Insert or update** writes an integer key and value; **Delete** removes a
+   key in its own compact control.
+2. **Key lookup** highlights one root-to-leaf path, **Range lookup** highlights
+   every overlapping branch, and **Diff lookup** highlights the node paths
+   changed since the immediately previous version.
+3. **Random** chooses between inserting a sparse key and updating an existing
+   row; **+ 25 rows** grows the right edge sequentially.
 4. **Force next split** keeps inserting until DoltLite produces another leaf
-   chunk, then selects the before-split version as the comparison baseline.
-5. **Fast diff** shows which subtrees can be skipped because their addresses
+   chunk.
+5. **Force next tree level** grows a real three-level tree using wide rows.
+6. **Fast diff** shows which subtrees can be skipped because their addresses
    match.
-6. **Chunk boundaries** lays out every live leaf range and its encoded size.
-7. **Opus concepts** includes guided experiments for copy-on-write, diff,
-   structural sharing, and history independence.
-8. Choose any earlier item in the **Version timeline** to change the comparison
-   baseline. New and shared content addresses update immediately.
+7. **Chunk boundaries** lays out every live leaf range, encoded size, and
+   interior-insert split probability.
+8. Choose any earlier item in the **Version timeline** to render that historical
+   tree. New and shared content addresses update immediately.
+9. **History independence** renders two real three-node trees. One is built
+   with sorted inserts; the other uses shuffled inserts and 30 value updates.
+   Their root and live chunk addresses are compared directly.
 
 Click any node to inspect its full address, encoded size, keys, SQL values, or
 child hashes.

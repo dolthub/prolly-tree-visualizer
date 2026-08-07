@@ -6,6 +6,9 @@ const FLAG_INT_KEY = 0x01;
 const FLAG_BLOB_KEY = 0x02;
 const FLAG_SUBTREE_COUNTS = 0x04;
 const HASH_SIZE = 20;
+const CHUNK_MIN = 512;
+const CHUNK_MAX = 16_384;
+const WEIBULL_SCALE = 4096;
 
 function assertRange(bytes: Uint8Array, offset: number, length: number, label: string) {
   if (offset < 0 || length < 0 || offset + length > bytes.length) {
@@ -158,6 +161,21 @@ export function traceSearch(root: ProllyNode, key: number) {
   return trace;
 }
 
+export function traceRange(root: ProllyNode, start: number, end: number) {
+  const low = Math.min(start, end);
+  const high = Math.max(start, end);
+  const trace: string[] = [];
+  const visit = (node: ProllyNode) => {
+    const min = Number(node.minKey);
+    const max = Number(node.maxKey);
+    if (!Number.isFinite(min) || !Number.isFinite(max) || max < low || min > high) return;
+    trace.push(node.hash);
+    node.children.forEach(visit);
+  };
+  visit(root);
+  return trace;
+}
+
 export function diffRows(before: RowValue[], after: RowValue[]): RowDiff[] {
   const left = new Map(before.map((row) => [row.key, row.value]));
   const right = new Map(after.map((row) => [row.key, row.value]));
@@ -170,6 +188,18 @@ export function diffRows(before: RowValue[], after: RowValue[]): RowDiff[] {
     if (newValue === undefined) return [{ key, before: oldValue, kind: 'deleted' }];
     return [{ key, before: oldValue, after: newValue, kind: 'modified' }];
   });
+}
+
+export function groupRowDiffsByLeaf(root: ProllyNode, diffs: RowDiff[]) {
+  const grouped = new Map<string, RowDiff[]>();
+  for (const diff of diffs) {
+    const leafHash = traceSearch(root, diff.key).at(-1);
+    if (!leafHash) continue;
+    const existing = grouped.get(leafHash);
+    if (existing) existing.push(diff);
+    else grouped.set(leafHash, [diff]);
+  }
+  return grouped;
 }
 
 export function leafNodes(root: ProllyNode) {
@@ -186,4 +216,32 @@ export function countSharedNodes(left: Map<string, ProllyNode>, right: Map<strin
   let shared = 0;
   for (const hash of left.keys()) if (right.has(hash)) shared += 1;
   return shared;
+}
+
+function boundaryProbability(size: number, itemSize: number) {
+  if (size < CHUNK_MIN) return 0;
+  if (size >= CHUNK_MAX) return 1;
+  const cdf = (bytes: number) => -Math.expm1(-Math.pow(bytes / WEIBULL_SCALE, 4));
+  const start = cdf(size - itemSize);
+  const end = cdf(size);
+  return Math.max(0, Math.min(1, (end - start) / (1 - start)));
+}
+
+export function estimateMutationSplitProbability(node: ProllyNode) {
+  if (node.level !== 0 || node.entries.length === 0) return 0;
+  const itemSizes = node.entries.map((entry) => entry.keyHex.length / 2 + entry.valueHex.length / 2 + 8);
+  const averageItemSize = itemSizes.reduce((total, size) => total + size, 0) / itemSizes.length;
+  let runningSize = itemSizes[0];
+  let weightedProbability = 0;
+  let availableKeys = 0;
+  for (let index = 1; index < itemSizes.length; index += 1) {
+    const left = Number(node.entries[index - 1].key);
+    const right = Number(node.entries[index].key);
+    if (!Number.isSafeInteger(left) || !Number.isSafeInteger(right)) return 0;
+    const gap = Math.max(0, right - left - 1);
+    weightedProbability += gap * boundaryProbability(runningSize + averageItemSize, averageItemSize);
+    availableKeys += gap;
+    runningSize += itemSizes[index];
+  }
+  return availableKeys > 0 ? weightedProbability / availableKeys : 0;
 }

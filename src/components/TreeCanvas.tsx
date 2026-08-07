@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
-import type { ProllyNode, TreeSnapshot } from '../types';
+import { groupRowDiffsByLeaf } from '../prolly';
+import type { ProllyNode, RowDiff, TreeSnapshot } from '../types';
 
 interface Point {
   x: number;
@@ -12,7 +13,7 @@ const NODE_HEIGHT = 126;
 const X_GAP = 34;
 const Y_GAP = 184;
 
-function layout(root: ProllyNode) {
+function layout(root: ProllyNode, minimumWidth: number) {
   const positions = new Map<string, Point>();
   let leafIndex = 0;
 
@@ -36,12 +37,12 @@ function layout(root: ProllyNode) {
   const rootCenter = place(root);
   const contentWidth = Math.max(leafIndex * (NODE_WIDTH + X_GAP) + 42, NODE_WIDTH + 76);
   if (leafIndex === 1) {
-    const offset = Math.max(0, 450 - rootCenter);
+    const offset = Math.max(0, minimumWidth / 2 - rootCenter);
     for (const point of positions.values()) point.x += offset;
   }
   return {
     positions,
-    width: Math.max(900, contentWidth),
+    width: Math.max(minimumWidth, contentWidth),
     height: (root.level + 1) * Y_GAP + 30,
   };
 }
@@ -52,16 +53,29 @@ function shownKeys(node: ProllyNode) {
   return `${keys.slice(0, 3).join('  ·  ')}  …  ${keys.slice(-2).join('  ·  ')}`;
 }
 
+function shownChanges(changes: RowDiff[]) {
+  if (changes.length === 1) {
+    const change = changes[0];
+    return `key ${change.key} ${change.kind === 'modified' ? 'updated' : change.kind}`;
+  }
+  const keys = changes.slice(0, 3).map((change) => change.key).join(', ');
+  return `${changes.length} changed rows · ${keys}${changes.length > 3 ? ', …' : ''}`;
+}
+
 interface TreeCanvasProps {
   snapshot: TreeSnapshot;
   baseline?: TreeSnapshot;
   trace: Set<string>;
+  diffHighlight: Set<string>;
+  rowDiffs: RowDiff[];
+  compact?: boolean;
   selectedHash?: string;
   onSelect(hash: string): void;
 }
 
-export function TreeCanvas({ snapshot, baseline, trace, selectedHash, onSelect }: TreeCanvasProps) {
-  const treeLayout = useMemo(() => layout(snapshot.root), [snapshot]);
+export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs, compact = false, selectedHash, onSelect }: TreeCanvasProps) {
+  const treeLayout = useMemo(() => layout(snapshot.root, compact ? 586 : 900), [compact, snapshot]);
+  const rowDiffsByLeaf = useMemo(() => groupRowDiffsByLeaf(snapshot.root, rowDiffs), [snapshot, rowDiffs]);
   const baselineHashes = baseline?.nodes;
 
   return (
@@ -73,10 +87,11 @@ export function TreeCanvas({ snapshot, baseline, trace, selectedHash, onSelect }
             point.node.children.map((child) => {
               const childPoint = treeLayout.positions.get(child.hash)!;
               const changed = baselineHashes ? !baselineHashes.has(child.hash) : false;
+              const highlighted = diffHighlight.has(child.hash);
               return (
                 <path
                   key={`${point.node.hash}-${child.hash}`}
-                  className={changed ? 'edge edge-new' : 'edge'}
+                  className={highlighted ? 'edge edge-diff' : changed ? 'edge edge-new' : 'edge'}
                   d={`M ${point.x + NODE_WIDTH / 2} ${point.y + NODE_HEIGHT} C ${point.x + NODE_WIDTH / 2} ${point.y + NODE_HEIGHT + 42}, ${childPoint.x + NODE_WIDTH / 2} ${childPoint.y - 42}, ${childPoint.x + NODE_WIDTH / 2} ${childPoint.y}`}
                 />
               );
@@ -84,7 +99,9 @@ export function TreeCanvas({ snapshot, baseline, trace, selectedHash, onSelect }
           )}
         </g>
         {[...treeLayout.positions.values()].map(({ node, x, y }) => {
+          const nodeRowDiffs = rowDiffsByLeaf.get(node.hash) ?? [];
           const isTrace = trace.has(node.hash);
+          const isDiff = diffHighlight.has(node.hash);
           const isNew = Boolean(baselineHashes && !baselineHashes.has(node.hash));
           const isShared = Boolean(baselineHashes?.has(node.hash));
           const className = [
@@ -93,6 +110,7 @@ export function TreeCanvas({ snapshot, baseline, trace, selectedHash, onSelect }
             isNew ? 'node-new' : '',
             isShared ? 'node-shared' : '',
             isTrace ? 'node-trace' : '',
+            isDiff ? 'node-diff' : '',
             selectedHash === node.hash ? 'node-selected' : '',
           ].filter(Boolean).join(' ');
           return (
@@ -116,9 +134,11 @@ export function TreeCanvas({ snapshot, baseline, trace, selectedHash, onSelect }
                 {node.entries.length} {node.entries.length === 1 ? 'entry' : 'entries'}
               </text>
               <line x1="14" x2={NODE_WIDTH - 14} y1="36" y2="36" />
-              <text className="node-keys" x="15" y="61">{shownKeys(node)}</text>
+              <text className={nodeRowDiffs.length ? 'node-keys node-row-change' : 'node-keys'} x="15" y="61">
+                {nodeRowDiffs.length ? shownChanges(nodeRowDiffs) : shownKeys(node)}
+              </text>
               <text className="node-range" x="15" y="84">
-                {node.minKey ?? '∅'} → {node.maxKey ?? '∅'} · {node.size.toLocaleString()} B
+                {node.size.toLocaleString()} bytes
               </text>
               <text className="node-hash" x="15" y="108">{node.hash.slice(0, 16)}…</text>
               <circle className="hash-dot" cx={NODE_WIDTH - 20} cy="103" r="6" />

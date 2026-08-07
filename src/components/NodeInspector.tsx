@@ -9,6 +9,8 @@ interface NodeInspectorProps {
 export function NodeInspector({ node, rows, onClose }: NodeInspectorProps) {
   if (!node) return null;
   const rowMap = new Map(rows.map((row) => [row.key, row.value]));
+  const visibleEntries = node.entries.slice(0, 12);
+  const hiddenEntries = node.entries.length - visibleEntries.length;
 
   return (
     <aside className="inspector">
@@ -27,9 +29,9 @@ export function NodeInspector({ node, rows, onClose }: NodeInspectorProps) {
       </dl>
       <div className="entry-list">
         <div className="entry-list-head">
-          <span>{node.level === 0 ? 'key → SQL value' : 'delimiter → child address'}</span>
+          <span>{node.level === 0 ? 'decoded key → SQL value' : 'delimiter → child address'}</span>
         </div>
-        {node.entries.map((entry, index) => (
+        {visibleEntries.map((entry, index) => (
           <div className="entry-row" key={`${entry.keyHex}-${index}`}>
             <span className="entry-key">{String(entry.key)}</span>
             <span className="entry-arrow">→</span>
@@ -39,6 +41,7 @@ export function NodeInspector({ node, rows, onClose }: NodeInspectorProps) {
             {entry.subtreeCount !== undefined && <span className="entry-count">{entry.subtreeCount} rows</span>}
           </div>
         ))}
+        {hiddenEntries > 0 && <div className="entry-more">and {hiddenEntries.toLocaleString()} more entries</div>}
       </div>
     </aside>
   );

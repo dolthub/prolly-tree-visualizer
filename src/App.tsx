@@ -1,33 +1,62 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ProllyEngine, type HistoryIndependenceResult } from './engine';
-import { countSharedNodes, diffRows, leafNodes, traceSearch } from './prolly';
+import { ProllyEngine, type GrowthResult, type InsertionOrderResult } from './engine';
+import { countSharedNodes, diffRows, estimateMutationSplitProbability, leafNodes, traceRange, traceSearch } from './prolly';
 import type { ProllyNode, TreeSnapshot } from './types';
 import { NodeInspector } from './components/NodeInspector';
 import { TreeCanvas } from './components/TreeCanvas';
 
-type Tab = 'tree' | 'diff' | 'chunks' | 'concepts';
+type Tab = 'tree' | 'diff' | 'chunks' | 'order';
+const NO_HIGHLIGHTS = new Set<string>();
+const NO_ROW_DIFFS: [] = [];
 
 function shortHash(hash: string) {
   return `${hash.slice(0, 10)}…${hash.slice(-6)}`;
 }
 
+function formatProbability(probability: number) {
+  const percent = probability * 100;
+  if (percent === 0) return '0%';
+  if (percent < 0.1) return '<0.1%';
+  return `${percent.toFixed(percent < 10 ? 1 : 0)}%`;
+}
+
+function formatOrder(order: number[]) {
+  const shown = order.slice(0, 14).map((key) => key.toLocaleString()).join(' → ');
+  return order.length > 14 ? `${shown} → …` : shown;
+}
+
 function App() {
   const engineRef = useRef<ProllyEngine | undefined>(undefined);
+  const operationPendingRef = useRef(false);
   const [snapshots, setSnapshots] = useState<TreeSnapshot[]>([]);
-  const [compareId, setCompareId] = useState<number>();
+  const [viewId, setViewId] = useState<number>();
+  const [compareFromId, setCompareFromId] = useState<number>();
   const [selectedHash, setSelectedHash] = useState<string>();
   const [tab, setTab] = useState<Tab>('tree');
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string>();
   const [keyInput, setKeyInput] = useState('49');
   const [valueInput, setValueInput] = useState('value-49');
+  const [deleteInput, setDeleteInput] = useState('1');
   const [searchInput, setSearchInput] = useState('24');
+  const [rangeStart, setRangeStart] = useState('1');
+  const [rangeEnd, setRangeEnd] = useState('48');
   const [trace, setTrace] = useState<Set<string>>(new Set());
-  const [historyResult, setHistoryResult] = useState<HistoryIndependenceResult>();
+  const [diffHighlight, setDiffHighlight] = useState<Set<string>>(new Set());
+  const [insertionOrderResult, setInsertionOrderResult] = useState<InsertionOrderResult>();
+  const [orderSelectedHash, setOrderSelectedHash] = useState<string>();
 
-  const current = snapshots.at(-1);
-  const baseline = snapshots.find((snapshot) => snapshot.id === compareId)
-    ?? (snapshots.length > 1 ? snapshots.at(-2) : undefined);
+  const latest = snapshots.at(-1);
+  const viewedIndex = viewId === undefined
+    ? snapshots.length - 1
+    : snapshots.findIndex((snapshot) => snapshot.id === viewId);
+  const current = snapshots[viewedIndex] ?? latest;
+  const requestedBaselineIndex = snapshots.findIndex((snapshot) => snapshot.id === compareFromId);
+  const baselineIndex = requestedBaselineIndex >= 0 && requestedBaselineIndex < viewedIndex
+    ? requestedBaselineIndex
+    : viewedIndex > 0 ? 0 : -1;
+  const baseline = baselineIndex >= 0 ? snapshots[baselineIndex] : undefined;
+  const viewingHistorical = Boolean(current && latest && current.id !== latest.id);
 
   useEffect(() => {
     let cancelled = false;
@@ -39,9 +68,13 @@ function App() {
       engineRef.current = engine;
       const first = engine.seed();
       setSnapshots([first]);
+      setCompareFromId(first.id);
       setKeyInput(String(first.rows.at(-1)!.key + 1));
       setValueInput(`value-${first.rows.at(-1)!.key + 1}`);
+      setDeleteInput(String(first.rows[0].key));
       setSearchInput(String(first.rows[Math.floor(first.rows.length / 2)].key));
+      setRangeStart(String(first.rows[0].key));
+      setRangeEnd(String(first.rows[Math.floor(first.rows.length / 4)].key));
       setError(undefined);
       setBusy(false);
     }).catch((cause: unknown) => {
@@ -55,19 +88,20 @@ function App() {
   }, []);
 
   const appendSnapshot = (snapshot: TreeSnapshot) => {
-    setSnapshots((existing) => {
-      const previous = existing.at(-1);
-      if (previous) setCompareId(previous.id);
-      return [...existing, snapshot];
-    });
+    setSnapshots((existing) => [...existing, snapshot]);
+    setViewId(undefined);
     setTrace(new Set());
+    setDiffHighlight(new Set());
     setSelectedHash(undefined);
+    setInsertionOrderResult(undefined);
+    setOrderSelectedHash(undefined);
     setKeyInput(String((snapshot.rows.at(-1)?.key ?? 0) + 1));
   };
 
   const run = (operation: (engine: ProllyEngine) => TreeSnapshot) => {
     const engine = engineRef.current;
-    if (!engine) return;
+    if (!engine || operationPendingRef.current) return;
+    operationPendingRef.current = true;
     setBusy(true);
     setError(undefined);
     window.setTimeout(() => {
@@ -76,6 +110,26 @@ function App() {
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
+        operationPendingRef.current = false;
+        setBusy(false);
+      }
+    }, 20);
+  };
+
+  const runGrowth = (operation: (engine: ProllyEngine) => GrowthResult) => {
+    const engine = engineRef.current;
+    if (!engine || operationPendingRef.current) return;
+    operationPendingRef.current = true;
+    setBusy(true);
+    setError(undefined);
+    window.setTimeout(() => {
+      try {
+        const result = operation(engine);
+        appendSnapshot(result.after);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        operationPendingRef.current = false;
         setBusy(false);
       }
     }, 20);
@@ -97,6 +151,11 @@ function App() {
   }, [baseline, current]);
 
   const selectedNode: ProllyNode | undefined = selectedHash ? current?.nodes.get(selectedHash) : undefined;
+  const previous = viewedIndex > 0 ? snapshots[viewedIndex - 1] : undefined;
+  const highlightedRowDiffs = diffHighlight.size > 0 && previous
+    ? diffRows(previous.rows, current.rows)
+    : [];
+  const diffBeforeRoot = baseline?.rootHash ?? current.rootHash;
 
   if (busy && !current) {
     return (
@@ -115,19 +174,42 @@ function App() {
     const key = Number(searchInput);
     if (!Number.isSafeInteger(key)) return;
     setTrace(new Set(traceSearch(current.root, key)));
+    setDiffHighlight(new Set());
     setTab('tree');
   };
 
-  const runHistoryDemo = () => {
+  const doRangeSearch = () => {
+    const start = Number(rangeStart);
+    const end = Number(rangeEnd);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return;
+    setTrace(new Set(traceRange(current.root, start, end)));
+    setDiffHighlight(new Set());
+    setTab('tree');
+  };
+
+  const doDiffLookup = () => {
+    if (viewedIndex <= 0) return;
+    const previous = snapshots[viewedIndex - 1];
+    setCompareFromId(previous.id);
+    setTrace(new Set());
+    setDiffHighlight(new Set([...current.nodes.keys()].filter((hash) => !previous.nodes.has(hash))));
+    setTab('tree');
+  };
+
+  const runInsertionOrderDemo = () => {
     const engine = engineRef.current;
-    if (!engine) return;
+    if (!engine || operationPendingRef.current) return;
+    operationPendingRef.current = true;
     setBusy(true);
+    setError(undefined);
     window.setTimeout(() => {
       try {
-        setHistoryResult(engine.historyIndependence(current.rows));
+        setInsertionOrderResult(engine.compareInsertionOrders());
+        setOrderSelectedHash(undefined);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
+        operationPendingRef.current = false;
         setBusy(false);
       }
     }, 20);
@@ -146,66 +228,98 @@ function App() {
 
       <section className="database-summary">
         <div className="root-card">
-          <span>Current table root</span>
+          <span>Tree root</span>
           <code>{current.rootHash}</code>
           <div><b>{current.rows.length}</b> rows <i /> <b>{current.nodes.size}</b> live nodes <i /> <b>{current.root.level + 1}</b> levels</div>
         </div>
       </section>
 
       <section className="control-deck">
-        <div className="control-group mutation-control">
-          <label>Insert or update</label>
-          <input aria-label="Key" type="number" value={keyInput} onChange={(event) => setKeyInput(event.target.value)} />
-          <input aria-label="Value" value={valueInput} onChange={(event) => setValueInput(event.target.value)} />
-          <button className="primary-button" disabled={busy} onClick={() => {
-            const key = Number(keyInput);
-            if (Number.isSafeInteger(key)) run((engine) => engine.put(key, valueInput || `value-${key}`));
-          }}>Put row</button>
+        <div className="control-row modify-row">
+          <div className="deck-label"><span>Modify the tree</span></div>
+          <div className="control-section put-section">
+            <label>Insert or update</label>
+            <div className="control-fields">
+              <input aria-label="Insert key" type="number" value={keyInput} onChange={(event) => setKeyInput(event.target.value)} />
+              <input className="value-input" aria-label="Value" value={valueInput} onChange={(event) => setValueInput(event.target.value)} />
+              <button className="primary-button" disabled={busy || viewingHistorical} onClick={() => {
+                const key = Number(keyInput);
+                if (Number.isSafeInteger(key)) run((engine) => engine.put(key, valueInput || `value-${key}`));
+              }}>Put row</button>
+              <button title="Randomly insert a new key or update an existing row" disabled={busy || viewingHistorical} onClick={() => run((engine) => engine.addRandom())}>Random</button>
+            </div>
+          </div>
+          <div className="control-section delete-section">
+            <label>Delete</label>
+            <div className="control-fields">
+              <input aria-label="Delete key" type="number" value={deleteInput} onChange={(event) => setDeleteInput(event.target.value)} />
+              <button className="danger-quiet" disabled={busy || viewingHistorical} onClick={() => {
+                const key = Number(deleteInput);
+                if (Number.isSafeInteger(key)) run((engine) => engine.remove(key));
+              }}>Delete</button>
+            </div>
+          </div>
+          <div className="control-section bulk-section">
+            <label>Bulk actions</label>
+            <div className="control-fields bulk-actions">
+              <button disabled={busy || viewingHistorical} onClick={() => run((engine) => engine.addSequential(25))}>+ 25 rows</button>
+              <button disabled={busy || viewingHistorical} onClick={() => { runGrowth((engine) => engine.growUntilSplit()); setTab('tree'); }}>Next split</button>
+              <button title={current.root.level >= 2 ? 'Three levels is the browser demo limit' : undefined} disabled={busy || viewingHistorical || current.root.level >= 2} onClick={() => { runGrowth((engine) => engine.growUntilNextLevel()); setTab('tree'); }}>{current.root.level >= 2 ? 'Three levels reached' : 'Next tree level'}</button>
+              <button className="reset-button" disabled={busy || viewingHistorical} onClick={() => {
+                const engine = engineRef.current;
+                if (!engine) return;
+                setBusy(true);
+                window.setTimeout(() => {
+                  try {
+                    const snapshot = engine.reset();
+                    setSnapshots([snapshot]);
+                    setViewId(undefined);
+                    setCompareFromId(snapshot.id);
+                    setTrace(new Set());
+                    setDiffHighlight(new Set());
+                    setInsertionOrderResult(undefined);
+                    setOrderSelectedHash(undefined);
+                  } finally {
+                    setBusy(false);
+                  }
+                }, 20);
+              }}>Reset</button>
+            </div>
+          </div>
         </div>
-        <div className="control-group search-control">
-          <label>Trace a lookup</label>
-          <input aria-label="Search key" type="number" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && doSearch()} />
-          <button disabled={busy} onClick={doSearch}>Find path</button>
-        </div>
-        <div className="quick-actions">
-          <button disabled={busy} onClick={() => run((engine) => engine.addRandom())}>+ Random</button>
-          <button disabled={busy} onClick={() => run((engine) => engine.addSequential(25))}>+ 25 rows</button>
-          <button disabled={busy} onClick={() => {
-            setBusy(true);
-            window.setTimeout(() => {
-              try {
-                const result = engineRef.current!.growUntilSplit();
-                setSnapshots((existing) => [...existing, result.before, result.after]);
-                setCompareId(result.before.id);
-                setTab('tree');
-              } catch (cause) {
-                setError(cause instanceof Error ? cause.message : String(cause));
-              } finally {
-                setBusy(false);
-              }
-            }, 20);
-          }}>Force next split</button>
-          <button className="danger-quiet" disabled={busy} onClick={() => {
-            const key = Number(keyInput);
-            if (Number.isSafeInteger(key)) run((engine) => engine.remove(key));
-          }}>Delete key</button>
-          <button className="reset-button" disabled={busy} onClick={() => {
-            const engine = engineRef.current;
-            if (!engine) return;
-            setBusy(true);
-            window.setTimeout(() => {
-              try {
-                const snapshot = engine.reset();
-                setSnapshots([snapshot]);
-                setCompareId(undefined);
-                setTrace(new Set());
-              } finally {
-                setBusy(false);
-              }
-            }, 20);
-          }}>Reset</button>
+        <div className="control-row lookup-row">
+          <div className="deck-label"><span>Lookup</span></div>
+          <div className="control-section key-lookup-section">
+            <label>Key lookup</label>
+            <div className="control-fields">
+              <input aria-label="Search key" type="number" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && doSearch()} />
+              <button disabled={busy} onClick={doSearch}>Find key</button>
+            </div>
+          </div>
+          <div className="control-section range-lookup-section">
+            <label>Range lookup</label>
+            <div className="control-fields">
+              <input aria-label="Range start" type="number" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} />
+              <span className="range-arrow">to</span>
+              <input aria-label="Range end" type="number" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && doRangeSearch()} />
+              <button disabled={busy} onClick={doRangeSearch}>Find range</button>
+            </div>
+          </div>
+          <div className="control-section diff-lookup-section">
+            <label>Diff lookup</label>
+            <div className="control-fields">
+              <button className="diff-lookup-button" disabled={busy || viewedIndex <= 0} onClick={doDiffLookup}>Highlight last change</button>
+            </div>
+          </div>
         </div>
       </section>
+
+      {viewingHistorical && (
+        <div className="history-view-banner">
+          <span>Viewing version {String(viewedIndex + 1).padStart(2, '0')} of {String(snapshots.length).padStart(2, '0')}. Editing is paused for historical states.</span>
+          <button onClick={() => { setViewId(undefined); setTrace(new Set()); setDiffHighlight(new Set()); setSelectedHash(undefined); }}>Return to latest</button>
+        </div>
+      )}
 
       {error && <div className="error-banner"><strong>Engine error</strong><span>{error}</span><button onClick={() => setError(undefined)}>×</button></div>}
       {busy && <div className="busy-bar"><span /> DoltLite is rebuilding and hashing the tree…</div>}
@@ -215,7 +329,7 @@ function App() {
           ['tree', 'Tree'],
           ['diff', `Fast diff${metrics.rowDiffs.length ? ` · ${metrics.rowDiffs.length}` : ''}`],
           ['chunks', `Chunk boundaries · ${metrics.leaves.length}`],
-          ['concepts', 'Opus concepts'],
+          ['order', 'History independence'],
         ] as [Tab, string][]).map(([id, label]) => (
           <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>
         ))}
@@ -229,6 +343,7 @@ function App() {
                 <span><i className="legend-new" /> new address</span>
                 <span><i className="legend-shared" /> structurally shared</span>
                 <span><i className="legend-trace" /> lookup path</span>
+                <span><i className="legend-diff" /> changed since previous</span>
               </div>
               {baseline && (
                 <div className="change-summary">
@@ -238,18 +353,28 @@ function App() {
               )}
             </div>
             <div className={selectedNode ? 'tree-with-inspector open' : 'tree-with-inspector'}>
-              <TreeCanvas snapshot={current} baseline={baseline} trace={trace} selectedHash={selectedHash} onSelect={setSelectedHash} />
+              <TreeCanvas snapshot={current} baseline={baseline} trace={trace} diffHighlight={diffHighlight} rowDiffs={highlightedRowDiffs} selectedHash={selectedHash} onSelect={setSelectedHash} />
               <NodeInspector node={selectedNode} rows={current.rows} onClose={() => setSelectedHash(undefined)} />
+            </div>
+            <div className="tree-storage-note">
+              Leaf chunks store encoded keys and SQL values. Internal chunks store delimiter keys and child addresses. Select a chunk to inspect it.
             </div>
           </>
         )}
 
         {tab === 'diff' && (
           <section className="panel-view diff-view">
-            <div className="panel-intro">
-              <span className="eyebrow">Hash-pruned comparison</span>
-              <h2>Diff work scales with what changed.</h2>
-              <p>Matching addresses represent identical subtrees. A diff skips all {metrics.shared} shared nodes and descends only through changed hashes.</p>
+            <div className="data-view-head">
+              <h2>Fast diff</h2>
+              <div className="diff-version-picker">
+                <label htmlFor="compare-from">From</label>
+                <select id="compare-from" value={baseline?.id ?? ''} disabled={!baseline} onChange={(event) => setCompareFromId(Number(event.target.value))}>
+                  {snapshots.slice(0, Math.max(0, viewedIndex)).map((snapshot, index) => (
+                    <option key={snapshot.id} value={snapshot.id}>Version {String(index + 1).padStart(2, '0')} · {snapshot.label}</option>
+                  ))}
+                </select>
+                <span>→ Version {String(viewedIndex + 1).padStart(2, '0')}</span>
+              </div>
             </div>
             <div className="diff-metrics">
               <div><b>{metrics.shared}</b><span>subtrees skipped</span></div>
@@ -257,8 +382,8 @@ function App() {
               <div><b>{metrics.rowDiffs.length}</b><span>row differences</span></div>
             </div>
             <div className="hash-compare">
-              <div><small>BEFORE</small><code>{baseline?.rootHash ?? current.rootHash}</code></div>
-              <span className={baseline?.rootHash === current.rootHash ? 'same-root' : 'changed-root'}>{baseline?.rootHash === current.rootHash ? '=' : '≠'}</span>
+              <div><small>BEFORE</small><code>{diffBeforeRoot}</code></div>
+              <span className={diffBeforeRoot === current.rootHash ? 'same-root' : 'changed-root'}>{diffBeforeRoot === current.rootHash ? '=' : '≠'}</span>
               <div><small>AFTER</small><code>{current.rootHash}</code></div>
             </div>
             <div className="row-diff-table">
@@ -274,59 +399,85 @@ function App() {
 
         {tab === 'chunks' && (
           <section className="panel-view chunks-view">
-            <div className="panel-intro">
-              <span className="eyebrow">Content-defined chunking</span>
-              <h2>Keys choose the boundaries.</h2>
-              <p>DoltLite considers each encoded key, the current chunk size, and a deterministic hash. Nodes are clamped between 512 B and 16 KiB; values do not choose boundaries.</p>
+            <div className="data-view-head">
+              <h2>Chunk boundaries</h2>
+              <div className="chunk-summary">
+                <span><b>{metrics.leaves.length}</b> leaves</span>
+                <span><b>{metrics.leaves.reduce((total, leaf) => total + leaf.size, 0).toLocaleString()}</b> live bytes</span>
+                <span><b>{metrics.leaves.reduce((total, leaf) => total + leaf.entries.length, 0).toLocaleString()}</b> keys</span>
+              </div>
             </div>
             <div className="chunk-strip">
               {metrics.leaves.map((leaf, index) => (
                 <button key={leaf.hash} style={{ flexGrow: Math.max(1, leaf.entries.length) }} onClick={() => { setSelectedHash(leaf.hash); setTab('tree'); }}>
                   <span>chunk {index + 1}</span><b>{leaf.minKey}–{leaf.maxKey}</b><small>{leaf.size} B · {leaf.entries.length} keys</small><code>{shortHash(leaf.hash)}</code>
+                  <em>{formatProbability(estimateMutationSplitProbability(leaf))} split chance</em>
                 </button>
               ))}
             </div>
             <div className="chunk-table">
-              <div className="chunk-row chunk-head"><span>#</span><span>Key range</span><span>Entries</span><span>Bytes</span><span>Content address</span></div>
+              <div className="chunk-row chunk-head"><span>#</span><span>Key range</span><span>Entries</span><span>Bytes</span><span title="Estimated chance that an insert into an unused integer key inside this range creates a boundary">Split chance ⓘ</span><span>Content address</span></div>
               {metrics.leaves.map((leaf, index) => (
                 <button className="chunk-row" key={leaf.hash} onClick={() => { setSelectedHash(leaf.hash); setTab('tree'); }}>
-                  <span>{index + 1}</span><span>{leaf.minKey} → {leaf.maxKey}</span><span>{leaf.entries.length}</span><span>{leaf.size.toLocaleString()}</span><code>{leaf.hash}</code>
+                  <span>{index + 1}</span><span>{leaf.minKey} → {leaf.maxKey}</span><span>{leaf.entries.length}</span><span>{leaf.size.toLocaleString()}</span><strong>{formatProbability(estimateMutationSplitProbability(leaf))}</strong><code>{leaf.hash}</code>
                 </button>
               ))}
             </div>
           </section>
         )}
 
-        {tab === 'concepts' && (
-          <section className="panel-view concepts-view">
-            <div className="panel-intro">
-              <span className="eyebrow">The prolly tree opus, made tangible</span>
-              <h2>Try the properties, don’t just read about them.</h2>
+        {tab === 'order' && (
+          <section className="panel-view history-order-view">
+            <div className="history-order-head">
+              <div>
+                <h2>History independence</h2>
+                <p>Build A inserts 180 rows in key order. Build B shuffles the inserts and rewrites 30 draft values.</p>
+              </div>
+              <button className="run-order-button" disabled={busy} onClick={runInsertionOrderDemo}>{insertionOrderResult ? 'Build both again' : 'Build both trees'}</button>
             </div>
-            <div className="concept-grid">
-              <article><span>01</span><h3>Build bottom-up</h3><p>Sorted key/value rows form leaf chunks. Each parent maps a child’s highest key to its content address until one root remains.</p><button onClick={() => setTab('tree')}>Explore levels</button></article>
-              <article><span>02</span><h3>Copy on write</h3><p>Update a value and only the leaf-to-root path receives new addresses. Neighboring chunks stay physically shared.</p><button disabled={busy} onClick={() => {
-                const row = current.rows[Math.floor(current.rows.length / 2)];
-                if (row) run((engine) => engine.put(row.key, `${row.value} · edited`));
-                setTab('tree');
-              }}>Update middle row</button></article>
-              <article><span>03</span><h3>Insert and split</h3><p>An insert can move a deterministic boundary. The old chunk remains addressable while new leaf chunks replace it in this version.</p><button disabled={busy} onClick={() => run((engine) => engine.addSequential(25))}>Grow the tree</button></article>
-              <article><span>04</span><h3>Fast diff</h3><p>Equal hashes prove equal subtrees. The comparison prunes shared nodes without reading every row.</p><button onClick={() => setTab('diff')}>See current diff</button></article>
-              <article className="history-card"><span>05</span><h3>History independence</h3><p>Build the same map in ascending and descending insertion order. DoltLite should produce exactly the same root address.</p><button disabled={busy} onClick={runHistoryDemo}>Run two real builds</button>
-                {historyResult && <div className={historyResult.identical ? 'history-result pass' : 'history-result fail'}><strong>{historyResult.identical ? 'Identical roots' : 'Roots differ'}</strong><code>{historyResult.forwardHash}</code><code>{historyResult.reverseHash}</code><small>{historyResult.rowCount} rows inserted in opposite orders</small></div>}
-              </article>
-              <article><span>06</span><h3>Structural sharing</h3><p>The content-addressed store writes a chunk once. This comparison currently reuses {metrics.shared} of {current.nodes.size} live nodes.</p><button onClick={() => setTab('chunks')}>Inspect addresses</button></article>
-            </div>
-            <a className="opus-link" href="https://www.dolthub.com/docs/architecture/storage-engine/prolly-tree/" target="_blank" rel="noreferrer">Read the complete Prolly Tree opus ↗</a>
+
+            {insertionOrderResult ? (
+              <>
+                <div className={insertionOrderResult.identicalRoot && insertionOrderResult.identicalChunks ? 'history-match pass' : 'history-match fail'}>
+                  <code>{insertionOrderResult.sorted.rootHash}</code>
+                  <span>{insertionOrderResult.identicalRoot ? 'same root' : 'different roots'}</span>
+                  <span>{insertionOrderResult.identicalChunks ? '3 / 3 live chunk addresses match' : 'live chunk addresses differ'}</span>
+                </div>
+                <div className="history-trees">
+                  <article className="history-tree">
+                    <header>
+                      <div><span>BUILD A</span><h3>Sorted inserts</h3></div>
+                      <code>{formatOrder(insertionOrderResult.sorted.order)}</code>
+                    </header>
+                    <div className="history-tree-canvas">
+                      <TreeCanvas snapshot={insertionOrderResult.sorted.snapshot} trace={NO_HIGHLIGHTS} diffHighlight={NO_HIGHLIGHTS} rowDiffs={NO_ROW_DIFFS} compact selectedHash={orderSelectedHash} onSelect={setOrderSelectedHash} />
+                    </div>
+                  </article>
+                  <article className="history-tree">
+                    <header>
+                      <div><span>BUILD B</span><h3>Shuffled inserts + {insertionOrderResult.shuffled.updates.length} updates</h3></div>
+                      <code>{formatOrder(insertionOrderResult.shuffled.order)}</code>
+                    </header>
+                    <div className="history-tree-canvas">
+                      <TreeCanvas snapshot={insertionOrderResult.shuffled.snapshot} trace={NO_HIGHLIGHTS} diffHighlight={NO_HIGHLIGHTS} rowDiffs={NO_ROW_DIFFS} compact selectedHash={orderSelectedHash} onSelect={setOrderSelectedHash} />
+                    </div>
+                  </article>
+                </div>
+                <p className="history-node-hint">Select a node in either tree to match its address in both.</p>
+              </>
+            ) : (
+              <div className="history-empty">The two three-node trees will render here.</div>
+            )}
           </section>
         )}
+
       </main>
 
       <section className="timeline-section">
-        <div className="timeline-head"><div><span className="eyebrow">Version timeline</span><h2>Choose a baseline</h2></div><p>Each operation keeps the previous content addresses available for comparison.</p></div>
+        <div className="timeline-head"><div><span className="eyebrow">Version timeline</span><h2>Inspect a version</h2></div><p>Select any state to render its tree. Fast diff compares it with the baseline chosen in that view.</p></div>
         <div className="timeline">
           {snapshots.map((snapshot, index) => (
-            <button key={snapshot.id} className={baseline?.id === snapshot.id ? 'selected' : ''} onClick={() => setCompareId(snapshot.id)} disabled={snapshot.id === current.id}>
+            <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { setViewId(snapshot.id); setTrace(new Set()); setDiffHighlight(new Set()); setSelectedHash(undefined); }} disabled={snapshot.id === current.id}>
               <span>{String(index + 1).padStart(2, '0')}</span><b>{snapshot.label}</b><code>{shortHash(snapshot.rootHash)}</code><small>{snapshot.rows.length} rows · {snapshot.nodes.size} nodes</small>
             </button>
           ))}
