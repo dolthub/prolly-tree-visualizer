@@ -645,15 +645,15 @@ function App() {
             </div>
 
             <div className="storage-comparison">
+              <article className="shared-storage-card">
+                <span>With structural sharing <InfoTip>Chunks with the same content address are reused across versions and counted only once.</InfoTip></span>
+                <b>{storageMetrics.withSharing.toLocaleString()}</b>
+                <small>distinct live tree content addresses</small>
+              </article>
               <article>
                 <span>Without structural sharing <em>theoretical</em></span>
                 <b>{storageMetrics.withoutSharing.toLocaleString()}</b>
                 <small>live tree chunks counted once per version</small>
-              </article>
-              <article className="shared-storage-card">
-                <span>With structural sharing</span>
-                <b>{storageMetrics.withSharing.toLocaleString()}</b>
-                <small>distinct live tree content addresses</small>
               </article>
               <article className="saved-storage-card">
                 <span>Chunks shared</span>
