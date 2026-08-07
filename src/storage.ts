@@ -22,3 +22,11 @@ export function calculateVersionStorage(versions: VersionNodes[]): VersionStorag
     savedFraction: withoutSharing === 0 ? 0 : savedChunks / withoutSharing,
   };
 }
+
+export function countHistoricalTreeChunks(versions: VersionNodes[]) {
+  const head = versions.at(-1);
+  if (!head) return 0;
+  const historical = new Set(versions.slice(0, -1).flatMap((version) => [...version.nodes.keys()]));
+  for (const hash of head.nodes.keys()) historical.delete(hash);
+  return historical.size;
+}

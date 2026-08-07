@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateVersionStorage } from './storage';
+import { calculateVersionStorage, countHistoricalTreeChunks } from './storage';
 
 describe('calculateVersionStorage', () => {
   it('counts shared addresses once across versions', () => {
@@ -26,5 +26,15 @@ describe('calculateVersionStorage', () => {
       savedChunks: 0,
       savedFraction: 0,
     });
+  });
+
+  it('counts every older root, internal, and leaf address not shared with HEAD', () => {
+    const versions = [
+      { nodes: new Map([['root-a', null], ['internal-a', null], ['leaf-shared', null]]) },
+      { nodes: new Map([['root-b', null], ['internal-a', null], ['leaf-old', null], ['leaf-shared', null]]) },
+      { nodes: new Map([['root-c', null], ['internal-c', null], ['leaf-shared', null]]) },
+    ];
+
+    expect(countHistoricalTreeChunks(versions)).toBe(4);
   });
 });

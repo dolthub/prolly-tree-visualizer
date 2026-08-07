@@ -232,6 +232,20 @@ code { font-family: var(--mono); }
 .physical-storage div + div { border-left: 1px solid var(--line); }
 .physical-storage span { color: var(--muted); font-size: 10px; }
 .physical-storage b { font: 500 12px var(--mono); }
+.chunk-makeup { margin-top: 12px; border: 1px solid var(--line); border-radius: 11px; padding: 15px 17px 17px; }
+.chunk-makeup-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.chunk-makeup-head > span { color: var(--muted); font-size: 10px; }
+.chunk-makeup-head small { font: 500 10px var(--mono); }
+.chunk-makeup-bar { display: flex; height: 13px; margin-top: 13px; overflow: hidden; border-radius: 999px; background: #e1e4e9; }
+.chunk-makeup-bar span { height: 100%; }
+.makeup-live { background: var(--brand); }
+.makeup-history { background: var(--orange); }
+.makeup-metadata { background: #8b93a7; }
+.chunk-makeup-legend { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 14px; }
+.chunk-makeup-legend > span { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 7px; color: var(--muted); font-size: 9px; }
+.chunk-makeup-legend i { width: 9px; height: 9px; border-radius: 3px; }
+.chunk-makeup-legend > span > span { display: flex; align-items: center; min-width: 0; }
+.chunk-makeup-legend b { color: var(--ink); font: 500 11px var(--mono); }
 .gc-report { margin-top: 20px; overflow: hidden; border: 1px solid #9cc6b8; border-radius: 12px; background: #f1faf6; }
 .gc-report-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #b8d8cd; padding: 13px 15px; }
 .gc-report-head span { color: var(--green); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
@@ -357,6 +371,7 @@ footer a:hover { text-decoration: underline; }
   .chunk-row > :nth-child(4), .chunk-row > :nth-child(5), .chunk-row > :nth-child(6) { display: none; }
   .storage-head, .storage-actions { align-items: flex-start; flex-direction: column; }
   .storage-comparison, .physical-storage, .gc-deltas { grid-template-columns: 1fr; }
+  .chunk-makeup-legend { grid-template-columns: 1fr; }
   .physical-storage div + div { border-top: 1px solid var(--line); border-left: 0; }
   .gc-deltas div { border-right: 0; border-bottom: 1px solid #cce2da; }
   .gc-deltas div:last-child { border-bottom: 0; }

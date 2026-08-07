@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ProllyEngine, type GrowthResult, type InsertionOrderResult } from './engine';
 import { countSharedNodes, diffRows, estimateMutationSplitProbability, leafNodes, traceRange, traceSearch } from './prolly';
-import { calculateVersionStorage } from './storage';
+import { calculateVersionStorage, countHistoricalTreeChunks } from './storage';
 import type { LookupResult, ProllyNode, TreeSnapshot } from './types';
 import { InfoTip } from './components/InfoTip';
 import { NodeInspector } from './components/NodeInspector';
@@ -323,6 +323,12 @@ function App() {
     return <main className="loading-screen error-screen"><h1>Could not start the lab</h1><p>{error}</p></main>;
   }
 
+  const physicalStore = latest ?? current;
+  const liveTableChunks = physicalStore.nodes.size;
+  const historicalTreeChunks = Math.min(countHistoricalTreeChunks(snapshots), Math.max(0, physicalStore.chunksInStore - liveTableChunks));
+  const metadataChunks = Math.max(0, physicalStore.chunksInStore - liveTableChunks - historicalTreeChunks);
+  const chunkWidth = (count: number) => physicalStore.chunksInStore === 0 ? 0 : count / physicalStore.chunksInStore * 100;
+
   const highlightedRowDiffs = lastChangeActive && previous
     ? diffRows(previous.rows, current.rows)
     : [];
@@ -454,8 +460,8 @@ function App() {
             <label>Bulk actions</label>
             <div className="control-fields bulk-actions">
               <button disabled={busy || viewingHistorical} onClick={() => run((engine) => engine.addSequential(25))}>+ 25 rows</button>
-              <button disabled={busy || viewingHistorical} onClick={() => { runGrowth((engine) => engine.growUntilSplit()); setTab('tree'); }}>Next split</button>
-              <button title={current.root.level >= 2 ? 'Three levels is the browser demo limit' : undefined} disabled={busy || viewingHistorical || current.root.level >= 2} onClick={() => { runGrowth((engine) => engine.growUntilNextLevel()); setTab('tree'); }}>{current.root.level >= 2 ? 'Three levels reached' : 'Next tree level'}</button>
+              <button disabled={busy || viewingHistorical} onClick={() => runGrowth((engine) => engine.growUntilSplit())}>Next split</button>
+              <button title={current.root.level >= 2 ? 'Three levels is the browser demo limit' : undefined} disabled={busy || viewingHistorical || current.root.level >= 2} onClick={() => runGrowth((engine) => engine.growUntilNextLevel())}>{current.root.level >= 2 ? 'Three levels reached' : 'Next tree level'}</button>
               <button className="reset-button" disabled={busy || viewingHistorical} onClick={() => {
                 const engine = engineRef.current;
                 if (!engine) return;
@@ -661,8 +667,25 @@ function App() {
             </div>
 
             <div className="physical-storage">
-              <div><span>Physical DoltLite store</span><b>{(latest?.chunksInStore ?? current.chunksInStore).toLocaleString()} chunks</b></div>
-              <div><span>Exported database</span><b>{(latest?.databaseBytes ?? current.databaseBytes).toLocaleString()} B</b></div>
+              <div><span>Physical DoltLite store</span><b>{physicalStore.chunksInStore.toLocaleString()} chunks</b></div>
+              <div><span>Exported database</span><b>{physicalStore.databaseBytes.toLocaleString()} B</b></div>
+            </div>
+
+            <div className="chunk-makeup">
+              <div className="chunk-makeup-head">
+                <span>Physical chunk makeup</span>
+                <small>{liveTableChunks} + {historicalTreeChunks} + {metadataChunks} = {physicalStore.chunksInStore}</small>
+              </div>
+              <div className="chunk-makeup-bar" aria-label={`${liveTableChunks} HEAD tree chunks, ${historicalTreeChunks} historical tree chunks, and ${metadataChunks} engine metadata chunks`}>
+                <span className="makeup-live" style={{ width: `${chunkWidth(liveTableChunks)}%` }} />
+                <span className="makeup-history" style={{ width: `${chunkWidth(historicalTreeChunks)}%` }} />
+                <span className="makeup-metadata" style={{ width: `${chunkWidth(metadataChunks)}%` }} />
+              </div>
+              <div className="chunk-makeup-legend">
+                <span><i className="makeup-live" /><span>HEAD tree <InfoTip>Every live root, internal, and leaf chunk shown in the Tree tab.</InfoTip></span><b>{liveTableChunks}</b></span>
+                <span><i className="makeup-history" /><span>Historical trees <InfoTip>Root, internal, and leaf chunks used only by earlier versions.</InfoTip></span><b>{historicalTreeChunks}</b></span>
+                <span><i className="makeup-metadata" /><span>Engine metadata <InfoTip>Everything else, including sqlite_schema, catalogs, working sets, refs, and commits.</InfoTip></span><b>{metadataChunks}</b></span>
+              </div>
             </div>
 
             {gcReport && (
