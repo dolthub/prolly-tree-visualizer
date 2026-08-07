@@ -99,6 +99,7 @@ code { font-family: var(--mono); }
 .legend-new { background: var(--green-soft); border: 1px solid var(--green); }
 .legend-trace { background: var(--blue-soft); border: 1px solid var(--blue); }
 .legend-diff { background: var(--orange-soft); border: 1px solid var(--orange); }
+.legend-skip { background: #f1f3f8; border: 1px dashed #74809d; }
 .change-summary { display: flex; gap: 14px; align-items: center; color: var(--muted); font-family: var(--mono); font-size: 11px; }
 .change-summary strong { background: var(--orange-soft); color: #ac4f25; padding: 6px 9px; border-radius: 6px; }
 .change-summary strong.no-content-change { background: #eef1f6; color: var(--muted); }
@@ -123,6 +124,9 @@ button.mutation-stage:disabled { cursor: default; }
 .mutation-stage > small { color: var(--muted); font-size: 11px; line-height: 1.4; }
 .mutation-stage > small .info-tip { vertical-align: -3px; }
 .mutation-total { border-color: #b9c8f3; background: var(--blue-soft); }
+.diff-skip-stage { border-style: dashed; border-color: #9da6bc; background: #f3f5f9; }
+.lookup-details-panel .mutation-cost-head em { background: var(--blue-soft); color: #334f9e; }
+.lookup-details-panel .mutation-cost-bar span { background: var(--blue); }
 .mutation-cost-foot { display: flex; align-items: center; justify-content: flex-end; gap: 14px; margin-top: 11px; color: var(--muted); font: 500 11px var(--mono); }
 .mutation-cost-ratio { display: flex; width: min(285px, 32%); align-items: center; gap: 5px; margin-right: auto; }
 .mutation-cost-bar { flex: 1; height: 7px; overflow: hidden; border-radius: 999px; background: #dfe3e8; }
@@ -136,6 +140,7 @@ button.mutation-stage:disabled { cursor: default; }
 .edge-new { stroke: #73b7a1; stroke-width: 2; stroke-dasharray: 4 4; }
 .edge-trace { stroke: var(--blue); stroke-width: 2.5; stroke-dasharray: 8 5; animation: trace-edge .45s ease-out; }
 .edge-diff { stroke: var(--orange); stroke-width: 2.5; animation: diff-edge .45s ease-out; }
+.edge-skip { stroke: #74809d; stroke-width: 2; stroke-dasharray: 3 5; }
 .tree-node { cursor: pointer; }
 .tree-node:focus-visible { outline: none; }
 .tree-node:focus-visible rect { stroke: var(--blue); stroke-width: 3; }
@@ -154,14 +159,18 @@ button.mutation-stage:disabled { cursor: default; }
 .node-range { font: 400 11px var(--mono); fill: #69736f; }
 .node-hash { font: 500 10px var(--mono); fill: var(--brand); }
 .node-hash-active { fill: var(--orange); stroke: var(--orange-soft); stroke-width: 4px; paint-order: stroke; font-size: 11px; font-weight: 900; }
+.node-hash-skip-active { fill: #52607f; stroke: #eef0f6; stroke-width: 4px; paint-order: stroke; font-size: 11px; font-weight: 900; }
 .internal-node rect { fill: #f1f3f8; }
 .node-new rect { fill: #eff9f5; stroke: var(--green); stroke-width: 2; }
 .node-new .node-kind { fill: var(--green); }
 .node-trace rect { fill: var(--blue-soft); stroke: var(--blue); stroke-width: 2.5; }
-.node-trace rect { transform-box: fill-box; transform-origin: center; animation: trace-node .35s ease-out; }
+.node-trace rect { transform-box: fill-box; transform-origin: center; animation: trace-node .35s var(--focus-delay, .3s) ease-out; }
 .node-diff rect { fill: var(--orange-soft); stroke: var(--orange); stroke-width: 3; }
-.node-diff rect { transform-box: fill-box; transform-origin: center; animation: diff-node .35s ease-out; }
+.node-diff rect { transform-box: fill-box; transform-origin: center; animation: diff-node .35s var(--focus-delay, .3s) ease-out; }
 .node-diff .node-kind { fill: #ad512b; }
+.node-skip rect { fill: #f3f5f9; stroke: #74809d; stroke-width: 2px; stroke-dasharray: 5 4; }
+.node-skip .node-kind { fill: #52607f; }
+.node-skip-active rect { transform-box: fill-box; transform-origin: center; animation: skip-node .55s var(--focus-delay, .3s) ease-out; }
 .node-selected rect, .node-selected:focus-visible rect { stroke: var(--ink); stroke-width: 3; }
 
 .inspector { min-width: 0; overflow: hidden; border-left: 1px solid var(--line); background: #fff; padding: 24px; }
@@ -341,9 +350,10 @@ footer a:hover { text-decoration: underline; }
 @keyframes trace-node { from { transform: scale(.97); stroke-width: 5; } }
 @keyframes diff-edge { from { opacity: .2; stroke-dashoffset: 42; } }
 @keyframes diff-node { from { transform: scale(.97); stroke-width: 5; } }
+@keyframes skip-node { 50% { transform: scale(1.025); stroke-width: 4; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .edge-trace, .node-trace rect, .edge-diff, .node-diff rect { animation: none; }
+  .edge-trace, .node-trace rect, .edge-diff, .node-diff rect, .node-skip-active rect { animation: none; }
 }
 
 @media (max-width: 1700px) {

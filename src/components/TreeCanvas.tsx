@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { groupRowDiffsByLeaf } from '../prolly';
 import type { LookupResult, ProllyNode, RowDiff, TreeSnapshot } from '../types';
 
@@ -128,6 +128,8 @@ interface TreeCanvasProps {
   activeTraceHash?: string;
   diffHighlight: Set<string>;
   activeDiffHashes?: Set<string>;
+  diffSkipped?: Set<string>;
+  activeDiffSkipped?: Set<string>;
   rowDiffs: RowDiff[];
   lookup?: LookupResult;
   compact?: boolean;
@@ -135,13 +137,38 @@ interface TreeCanvasProps {
   onSelect(hash: string): void;
 }
 
-export function TreeCanvas({ snapshot, baseline, trace, activeTraceHash, diffHighlight, activeDiffHashes, rowDiffs, lookup, compact = false, selectedHash, onSelect }: TreeCanvasProps) {
+export function TreeCanvas({ snapshot, baseline, trace, activeTraceHash, diffHighlight, activeDiffHashes, diffSkipped, activeDiffSkipped, rowDiffs, lookup, compact = false, selectedHash, onSelect }: TreeCanvasProps) {
+  const scrollRef = useRef<HTMLDivElement>(null);
   const treeLayout = useMemo(() => layout(snapshot.root, compact ? 586 : 900), [compact, snapshot]);
   const rowDiffsByLeaf = useMemo(() => groupRowDiffsByLeaf(snapshot.root, rowDiffs), [snapshot, rowDiffs]);
   const baselineHashes = baseline?.nodes;
 
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    const activeDiff = activeDiffHashes && activeDiffHashes.size > 0
+      ? [...activeDiffHashes]
+      : activeDiffSkipped ? [...activeDiffSkipped] : [];
+    const focusHashes = activeTraceHash ? [activeTraceHash] : activeDiff;
+    const points = focusHashes.flatMap((hash) => {
+      const point = treeLayout.positions.get(hash);
+      return point ? [point] : [];
+    });
+    if (!scroll || points.length === 0 || scroll.scrollWidth <= scroll.clientWidth) return;
+    const left = Math.min(...points.map((point) => point.x));
+    const right = Math.max(...points.map((point) => point.x + NODE_WIDTH));
+    scroll.scrollTo({
+      left: Math.max(0, (left + right) / 2 - scroll.clientWidth / 2),
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    });
+  }, [activeDiffHashes, activeDiffSkipped, activeTraceHash, treeLayout]);
+
   return (
-    <div className="tree-scroll" aria-label="Prolly tree visualization">
+    <div
+      ref={scrollRef}
+      className="tree-scroll"
+      aria-label="Prolly tree visualization"
+      style={{ '--focus-delay': snapshot.nodes.size > 100 ? '1.2s' : snapshot.nodes.size > 20 ? '.6s' : '.3s' } as CSSProperties}
+    >
       <svg className="tree-svg" width={treeLayout.width} height={treeLayout.height} role="img">
         <title>Prolly tree rooted at {snapshot.rootHash}</title>
         <g className="tree-edges">
@@ -150,11 +177,12 @@ export function TreeCanvas({ snapshot, baseline, trace, activeTraceHash, diffHig
               const childPoint = treeLayout.positions.get(child.hash)!;
               const changed = baselineHashes ? !baselineHashes.has(child.hash) : false;
               const highlighted = diffHighlight.has(child.hash);
+              const skipped = diffSkipped?.has(child.hash);
               const traced = trace.has(point.node.hash) && trace.has(child.hash);
               return (
                 <path
                   key={`${point.node.hash}-${child.hash}`}
-                  className={highlighted ? 'edge edge-diff' : traced ? 'edge edge-trace' : changed ? 'edge edge-new' : 'edge'}
+                  className={highlighted ? 'edge edge-diff' : skipped ? 'edge edge-skip' : traced ? 'edge edge-trace' : changed ? 'edge edge-new' : 'edge'}
                   d={`M ${point.x + NODE_WIDTH / 2} ${point.y + NODE_HEIGHT} C ${point.x + NODE_WIDTH / 2} ${point.y + NODE_HEIGHT + 42}, ${childPoint.x + NODE_WIDTH / 2} ${childPoint.y - 42}, ${childPoint.x + NODE_WIDTH / 2} ${childPoint.y}`}
                 />
               );
@@ -166,6 +194,8 @@ export function TreeCanvas({ snapshot, baseline, trace, activeTraceHash, diffHig
           const isTrace = trace.has(node.hash);
           const isActiveTrace = activeTraceHash === node.hash;
           const isDiff = diffHighlight.has(node.hash);
+          const isSkipped = Boolean(diffSkipped?.has(node.hash));
+          const isActiveSkipped = Boolean(activeDiffSkipped?.has(node.hash));
           const isNew = Boolean(baselineHashes && !baselineHashes.has(node.hash));
           const lookupKeys = lookup && isTrace
             ? lookup.kind === 'range'
@@ -185,6 +215,8 @@ export function TreeCanvas({ snapshot, baseline, trace, activeTraceHash, diffHig
             isNew ? 'node-new' : '',
             isTrace ? 'node-trace' : '',
             isDiff ? 'node-diff' : '',
+            isSkipped ? 'node-skip' : '',
+            isActiveSkipped ? 'node-skip-active' : '',
             selectedHash === node.hash ? 'node-selected' : '',
           ].filter(Boolean).join(' ');
           return (
@@ -203,7 +235,7 @@ export function TreeCanvas({ snapshot, baseline, trace, activeTraceHash, diffHig
             >
               <rect width={NODE_WIDTH} height={NODE_HEIGHT} rx="14" />
               <text className="node-kind" x="15" y="24">
-                {node.level === 0 ? 'LEAF CHUNK' : `INTERNAL · LEVEL ${node.level}`}
+                {isSkipped ? 'SHARED · SKIP' : node.level === 0 ? 'LEAF CHUNK' : `INTERNAL · LEVEL ${node.level}`}
               </text>
               <text className="node-count" x={NODE_WIDTH - 15} y="24" textAnchor="end">
                 {node.entries.length} {node.entries.length === 1 ? 'entry' : 'entries'}
@@ -217,7 +249,7 @@ export function TreeCanvas({ snapshot, baseline, trace, activeTraceHash, diffHig
               <text className="node-range" x="15" y="84">
                 {node.size.toLocaleString()} bytes
               </text>
-              <text className={activeDiffHashes?.has(node.hash) ? 'node-hash node-hash-active' : 'node-hash'} x="15" y="108">{node.hash}</text>
+              <text className={activeDiffHashes?.has(node.hash) ? 'node-hash node-hash-active' : isActiveSkipped ? 'node-hash node-hash-skip-active' : 'node-hash'} x="15" y="108">{node.hash}</text>
             </g>
           );
         })}

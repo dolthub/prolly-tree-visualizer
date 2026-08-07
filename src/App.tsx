@@ -3,14 +3,19 @@ import { ProllyEngine, type GrowthResult, type InsertionOrderResult } from './en
 import { countSharedNodes, diffRows, estimateMutationSplitProbability, leafNodes, traceRange, traceSearch } from './prolly';
 import { calculateVersionStorage, countHistoricalTreeChunks } from './storage';
 import { calculateMutationCost } from './mutationCost';
+import { buildDiffTraversal, type DiffTraversalFrame } from './diffTraversal';
 import type { LookupResult, ProllyNode, TreeSnapshot } from './types';
 import { InfoTip } from './components/InfoTip';
+import { DiffPlaybackPanel } from './components/DiffPlaybackPanel';
+import { LookupDetailsPanel, type LookupDetails } from './components/LookupDetailsPanel';
 import { MutationCostPanel } from './components/MutationCostPanel';
 import { NodeInspector } from './components/NodeInspector';
 import { TreeCanvas } from './components/TreeCanvas';
 
 type Tab = 'tree' | 'diff' | 'chunks' | 'storage' | 'order';
 type ControlMode = 'modify' | 'lookup';
+type ActionDetails = 'mutation' | 'lookup' | 'diff';
+type DiffPlayback = DiffTraversalFrame & { step: number; totalSteps: number; running: boolean };
 const NO_HIGHLIGHTS = new Set<string>();
 const NO_ROW_DIFFS: [] = [];
 
@@ -51,6 +56,12 @@ function formatStorageDelta(before: number, after: number, suffix = '') {
   return `${delta > 0 ? '+' : delta < 0 ? '−' : ''}${Math.abs(delta).toLocaleString()}${suffix}`;
 }
 
+function animationStepMs(nodeCount: number) {
+  if (nodeCount > 100) return 2400;
+  if (nodeCount > 20) return 1600;
+  return 1000;
+}
+
 function App() {
   const engineRef = useRef<ProllyEngine | undefined>(undefined);
   const operationPendingRef = useRef(false);
@@ -75,10 +86,16 @@ function App() {
   const [lookupResult, setLookupResult] = useState<LookupResult>();
   const [diffHighlight, setDiffHighlight] = useState<Set<string>>(new Set());
   const [activeDiffHashes, setActiveDiffHashes] = useState<Set<string>>(new Set());
+  const [diffSkipped, setDiffSkipped] = useState<Set<string>>(new Set());
+  const [activeDiffSkipped, setActiveDiffSkipped] = useState<Set<string>>(new Set());
+  const [diffPlayback, setDiffPlayback] = useState<DiffPlayback>();
+  const [showNewAddresses, setShowNewAddresses] = useState(false);
   const [lastChangeActive, setLastChangeActive] = useState(false);
   const [insertionOrderResult, setInsertionOrderResult] = useState<InsertionOrderResult>();
   const [orderSelectedHash, setOrderSelectedHash] = useState<string>();
   const [gcReport, setGcReport] = useState<GarbageCollectionReport>();
+  const [actionDetails, setActionDetails] = useState<ActionDetails>();
+  const [lookupDetails, setLookupDetails] = useState<LookupDetails>();
 
   const latest = snapshots.at(-1);
   const viewedIndex = viewId === undefined
@@ -99,6 +116,9 @@ function App() {
     if (resetActive) {
       setActiveTraceHash(undefined);
       setActiveDiffHashes(new Set());
+      setDiffSkipped(new Set());
+      setActiveDiffSkipped(new Set());
+      setDiffPlayback(undefined);
     }
   };
 
@@ -112,37 +132,53 @@ function App() {
       setTrace(new Set(path));
       return;
     }
+    const stepMs = animationStepMs(current.nodes.size);
     setTrace(new Set([path[0]]));
     setActiveTraceHash(path[0]);
     animationTimersRef.current = path.slice(1).map((hash, index) => window.setTimeout(() => {
       setTrace((visible) => new Set([...visible, hash]));
       setActiveTraceHash(hash);
-    }, (index + 1) * 1000));
-    animationTimersRef.current.push(window.setTimeout(() => setActiveTraceHash(undefined), path.length * 1000));
+    }, (index + 1) * stepMs));
+    animationTimersRef.current.push(window.setTimeout(() => setActiveTraceHash(undefined), path.length * stepMs));
   };
 
-  const animateDiff = (hashes: Set<string>) => {
+  const animateDiff = (baseline: TreeSnapshot) => {
     cancelAnimation();
-    if (!current || hashes.size === 0) {
-      setDiffHighlight(new Set());
-      return;
-    }
-    const levels = [...new Set([...hashes].map((hash) => current.nodes.get(hash)?.level).filter((level): level is number => level !== undefined))]
-      .sort((left, right) => right - left);
+    if (!current) return;
+    const frames = buildDiffTraversal(current, baseline, diffRows(baseline.rows, current.rows));
+    const applyFrame = (frame: DiffTraversalFrame, step: number, running: boolean) => {
+      setDiffHighlight(new Set(frame.changedHashes));
+      setDiffSkipped(new Set(frame.skippedHashes));
+      setActiveDiffHashes(new Set(frame.activeChangedHashes));
+      setActiveDiffSkipped(new Set(frame.activeSkippedHashes));
+      setDiffPlayback({ ...frame, step, totalSteps: frames.length, running });
+    };
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      setDiffHighlight(hashes);
+      applyFrame(frames.at(-1)!, frames.length - 1, false);
       return;
     }
-    const hashesAtLevel = (level: number) => [...hashes].filter((hash) => current.nodes.get(hash)?.level === level);
-    const firstLevel = new Set(hashesAtLevel(levels[0]));
-    setDiffHighlight(firstLevel);
-    setActiveDiffHashes(firstLevel);
-    animationTimersRef.current = levels.slice(1).map((level, index) => window.setTimeout(() => {
-      const nextLevel = new Set(hashesAtLevel(level));
-      setDiffHighlight((visible) => new Set([...visible, ...nextLevel]));
-      setActiveDiffHashes(nextLevel);
-    }, (index + 1) * 1000));
-    animationTimersRef.current.push(window.setTimeout(() => setActiveDiffHashes(new Set()), levels.length * 1000));
+    const stepMs = animationStepMs(current.nodes.size);
+    applyFrame(frames[0], 0, true);
+    animationTimersRef.current = frames.slice(1).map((frame, index) => window.setTimeout(() => {
+      applyFrame(frame, index + 1, true);
+    }, (index + 1) * stepMs));
+    animationTimersRef.current.push(window.setTimeout(() => {
+      setActiveDiffHashes(new Set());
+      setActiveDiffSkipped(new Set());
+      setDiffPlayback((playback) => playback ? { ...playback, running: false } : playback);
+    }, frames.length * stepMs));
+  };
+
+  const resetTreeState = () => {
+    cancelAnimation();
+    setTrace(new Set());
+    setLookupResult(undefined);
+    setDiffHighlight(new Set());
+    setLastChangeActive(false);
+    setSelectedHash(undefined);
+    setShowNewAddresses(false);
+    setActionDetails(undefined);
+    setLookupDetails(undefined);
   };
 
   const selectExistingInputs = (snapshot: TreeSnapshot) => {
@@ -192,16 +228,13 @@ function App() {
   }, []);
 
   const appendSnapshot = (snapshot: TreeSnapshot) => {
-    cancelAnimation();
+    resetTreeState();
     setSnapshots((existing) => [...existing, snapshot]);
     setViewId(undefined);
-    setTrace(new Set());
-    setLookupResult(undefined);
-    setDiffHighlight(new Set());
-    setLastChangeActive(false);
-    setSelectedHash(undefined);
     setInsertionOrderResult(undefined);
     setOrderSelectedHash(undefined);
+    setShowNewAddresses(true);
+    setActionDetails('mutation');
     selectExistingInputs(snapshot);
   };
 
@@ -209,6 +242,7 @@ function App() {
     const engine = engineRef.current;
     if (!engine || operationPendingRef.current) return;
     operationPendingRef.current = true;
+    resetTreeState();
     setBusy(true);
     setError(undefined);
     window.setTimeout(() => {
@@ -229,6 +263,7 @@ function App() {
     const engine = engineRef.current;
     if (!engine || operationPendingRef.current) return;
     operationPendingRef.current = true;
+    resetTreeState();
     setBusy(true);
     setError(undefined);
     window.setTimeout(() => {
@@ -248,6 +283,7 @@ function App() {
     const engine = engineRef.current;
     if (!engine || operationPendingRef.current || snapshots.length === 0) return;
     const storageBefore = calculateVersionStorage(snapshots);
+    resetTreeState();
     operationPendingRef.current = true;
     setBusy(true);
     setGcRunning(true);
@@ -258,12 +294,6 @@ function App() {
         setSnapshots([result.head]);
         setViewId(undefined);
         setCompareFromId(result.head.id);
-        setTrace(new Set());
-        cancelAnimation();
-        setLookupResult(undefined);
-        setDiffHighlight(new Set());
-        setLastChangeActive(false);
-        setSelectedHash(undefined);
         setInsertionOrderResult(undefined);
         setOrderSelectedHash(undefined);
         selectExistingInputs(result.head);
@@ -334,7 +364,7 @@ function App() {
   const metadataChunks = Math.max(0, physicalStore.chunksInStore - liveTableChunks - historicalTreeChunks);
   const chunkWidth = (count: number) => physicalStore.chunksInStore === 0 ? 0 : count / physicalStore.chunksInStore * 100;
 
-  const highlightedRowDiffs = lastChangeActive && previous
+  const highlightedRowDiffs = lastChangeActive && previous && diffPlayback?.revealedRows
     ? diffRows(previous.rows, current.rows)
     : [];
   const diffBeforeRoot = diffBaseline?.rootHash ?? current.rootHash;
@@ -342,8 +372,13 @@ function App() {
   const doSearch = () => {
     const key = Number(searchInput);
     if (!Number.isSafeInteger(key)) return;
-    animateTrace(traceSearch(current.root, key));
-    setLookupResult({ kind: 'key', key, found: current.rows.some((row) => row.key === key) });
+    resetTreeState();
+    const path = traceSearch(current.root, key);
+    const found = current.rows.some((row) => row.key === key);
+    animateTrace(path);
+    setLookupResult({ kind: 'key', key, found });
+    setLookupDetails({ kind: 'key', key, found, path });
+    setActionDetails('lookup');
     setDiffHighlight(new Set());
     setLastChangeActive(false);
     setTab('tree');
@@ -353,26 +388,31 @@ function App() {
     const start = Number(rangeStart);
     const end = Number(rangeEnd);
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return;
-    animateTrace(traceRange(current.root, start, end));
+    resetTreeState();
+    const path = traceRange(current.root, start, end);
+    const low = Math.min(start, end);
+    const high = Math.max(start, end);
+    const matchedRows = current.rows.filter((row) => row.key >= low && row.key <= high).length;
+    animateTrace(path);
     setLookupResult({ kind: 'range', start, end });
+    setLookupDetails({ kind: 'range', start, end, matchedRows, path });
+    setActionDetails('lookup');
     setDiffHighlight(new Set());
     setLastChangeActive(false);
     setTab('tree');
   };
 
   const doDiffLookup = () => {
-    cancelAnimation();
     if (lastChangeActive) {
-      setDiffHighlight(new Set());
-      setLastChangeActive(false);
-      setSelectedHash(undefined);
+      resetTreeState();
       return;
     }
     if (viewedIndex <= 0) return;
     const previous = snapshots[viewedIndex - 1];
-    setTrace(new Set());
-    setLookupResult(undefined);
-    animateDiff(new Set([...current.nodes.keys()].filter((hash) => !previous.nodes.has(hash))));
+    resetTreeState();
+    animateDiff(previous);
+    setActionDetails('diff');
+    setShowNewAddresses(false);
     setLastChangeActive(true);
     setSelectedHash(undefined);
     setTab('tree');
@@ -382,6 +422,7 @@ function App() {
     const engine = engineRef.current;
     if (!engine || operationPendingRef.current) return;
     operationPendingRef.current = true;
+    resetTreeState();
     setBusy(true);
     setError(undefined);
     window.setTimeout(() => {
@@ -427,8 +468,8 @@ function App() {
 
       <section className="control-deck">
         <div className="control-tabs" role="tablist" aria-label="Tree controls">
-          <button className={controlMode === 'modify' ? 'control-tab active' : 'control-tab'} role="tab" aria-selected={controlMode === 'modify'} aria-controls="modify-controls" onClick={() => setControlMode('modify')}>Modify</button>
-          <button className={controlMode === 'lookup' ? 'control-tab active' : 'control-tab'} role="tab" aria-selected={controlMode === 'lookup'} aria-controls="lookup-controls" onClick={() => setControlMode('lookup')}>Lookup</button>
+          <button className={controlMode === 'modify' ? 'control-tab active' : 'control-tab'} role="tab" aria-selected={controlMode === 'modify'} aria-controls="modify-controls" onClick={() => { resetTreeState(); setControlMode('modify'); }}>Modify</button>
+          <button className={controlMode === 'lookup' ? 'control-tab active' : 'control-tab'} role="tab" aria-selected={controlMode === 'lookup'} aria-controls="lookup-controls" onClick={() => { resetTreeState(); setControlMode('lookup'); }}>Lookup</button>
         </div>
         {controlMode === 'modify' && <div className="control-row modify-row" id="modify-controls" role="tabpanel">
           <div className="control-section put-section">
@@ -470,6 +511,7 @@ function App() {
               <button className="reset-button" disabled={busy || viewingHistorical} onClick={() => {
                 const engine = engineRef.current;
                 if (!engine) return;
+                resetTreeState();
                 setBusy(true);
                 window.setTimeout(() => {
                   try {
@@ -477,11 +519,6 @@ function App() {
                     setSnapshots([snapshot]);
                     setViewId(undefined);
                     setCompareFromId(snapshot.id);
-                    setTrace(new Set());
-                    cancelAnimation();
-                    setLookupResult(undefined);
-                    setDiffHighlight(new Set());
-                    setLastChangeActive(false);
                     setInsertionOrderResult(undefined);
                     setOrderSelectedHash(undefined);
                     setGcReport(undefined);
@@ -523,7 +560,7 @@ function App() {
       {viewingHistorical && (
         <div className="history-view-banner">
           <span>Viewing version {String(viewedIndex + 1).padStart(2, '0')} of {String(snapshots.length).padStart(2, '0')}. Editing is paused for historical states.</span>
-          <button onClick={() => { cancelAnimation(); setViewId(undefined); setTrace(new Set()); setLookupResult(undefined); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }}>Return to latest</button>
+          <button onClick={() => { resetTreeState(); setViewId(undefined); }}>Return to latest</button>
         </div>
       )}
 
@@ -552,6 +589,7 @@ function App() {
                 <span><i className="legend-new" /> new address <InfoTip>A chunk address that did not exist in the immediately previous version.</InfoTip></span>
                 <span><i className="legend-trace" /> lookup path <InfoTip>Chunks visited while resolving the current key or range lookup.</InfoTip></span>
                 <span><i className="legend-diff" /> changed since previous <InfoTip>Chunks rewritten by the single change between this version and the version immediately before it.</InfoTip></span>
+                {lastChangeActive && <span><i className="legend-skip" /> shared subtree skipped <InfoTip>A matching content address proves every row below it is equal, so diff does not descend into the subtree.</InfoTip></span>}
               </div>
               {previous && (
                 <div className="change-summary">
@@ -563,18 +601,21 @@ function App() {
               )}
             </div>
             <div className={selectedNode ? 'tree-with-inspector open' : 'tree-with-inspector'}>
-              <TreeCanvas snapshot={current} baseline={previous} trace={trace} activeTraceHash={activeTraceHash} diffHighlight={diffHighlight} activeDiffHashes={activeDiffHashes} rowDiffs={highlightedRowDiffs} lookup={lookupResult} selectedHash={selectedHash} onSelect={setSelectedHash} />
+              <TreeCanvas snapshot={current} baseline={showNewAddresses ? previous : undefined} trace={trace} activeTraceHash={activeTraceHash} diffHighlight={diffHighlight} activeDiffHashes={activeDiffHashes} diffSkipped={diffSkipped} activeDiffSkipped={activeDiffSkipped} rowDiffs={highlightedRowDiffs} lookup={lookupResult} selectedHash={selectedHash} onSelect={(hash) => { resetTreeState(); setSelectedHash(hash); }} />
               <NodeInspector node={selectedNode} rows={current.rows} onClose={() => setSelectedHash(undefined)} />
             </div>
             <div className="tree-storage-note">
               Leaf chunks store encoded keys and SQL values. Internal chunks store delimiter keys and child addresses. Select a chunk to inspect it.
             </div>
-            {mutationCost && <MutationCostPanel cost={mutationCost} label={current.label} split={metrics.tree.splitDelta > 0} onHighlight={(hashes) => {
+            {actionDetails === 'diff' && diffPlayback && <DiffPlaybackPanel playback={diffPlayback} rowDifferences={metrics.tree.rowDiffs.length} />}
+            {actionDetails === 'lookup' && lookupDetails && <LookupDetailsPanel details={lookupDetails} snapshot={current} visited={trace} activeHash={activeTraceHash} />}
+            {actionDetails === 'mutation' && mutationCost && <MutationCostPanel cost={mutationCost} label={current.label} split={metrics.tree.splitDelta > 0} onHighlight={(hashes) => {
               cancelAnimation();
               setTrace(new Set());
               setLookupResult(undefined);
               setDiffHighlight(new Set(hashes));
               setLastChangeActive(false);
+              setShowNewAddresses(false);
               setSelectedHash(undefined);
             }} />}
           </>
@@ -627,7 +668,7 @@ function App() {
             </div>
             <div className="chunk-strip">
               {metrics.leaves.map((leaf, index) => (
-                <button key={leaf.hash} style={{ flexGrow: Math.max(1, leaf.entries.length) }} onClick={() => { setSelectedHash(leaf.hash); setTab('tree'); }}>
+                <button key={leaf.hash} style={{ flexGrow: Math.max(1, leaf.entries.length) }} onClick={() => { resetTreeState(); setSelectedHash(leaf.hash); setTab('tree'); }}>
                   <span>chunk {index + 1}</span><b>{leaf.minKey}–{leaf.maxKey}</b><small>{leaf.size} B · {leaf.entries.length} keys</small><code>{leaf.hash}</code>
                   <em>{formatProbability(estimateMutationSplitProbability(leaf))} split chance</em>
                 </button>
@@ -636,7 +677,7 @@ function App() {
             <div className="chunk-table">
               <div className="chunk-row chunk-head"><span>#</span><span>Key range</span><span>Entries</span><span>Bytes</span><span>Split chance <InfoTip>Estimated chance that inserting an unused integer key in this range creates a new chunk boundary.</InfoTip></span><span>Content address</span></div>
               {metrics.leaves.map((leaf, index) => (
-                <button className="chunk-row" key={leaf.hash} onClick={() => { setSelectedHash(leaf.hash); setTab('tree'); }}>
+                <button className="chunk-row" key={leaf.hash} onClick={() => { resetTreeState(); setSelectedHash(leaf.hash); setTab('tree'); }}>
                   <span>{index + 1}</span><span>{leaf.minKey} → {leaf.maxKey}</span><span>{leaf.entries.length}</span><span>{leaf.size.toLocaleString()}</span><strong>{formatProbability(estimateMutationSplitProbability(leaf))}</strong><code>{leaf.hash}</code>
                 </button>
               ))}
@@ -771,7 +812,7 @@ function App() {
             {[...snapshots].reverse().map((snapshot, reverseIndex) => {
               const index = snapshots.length - reverseIndex - 1;
               return (
-                <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { cancelAnimation(); setViewId(snapshot.id); setTrace(new Set()); setLookupResult(undefined); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }} disabled={snapshot.id === current.id}>
+                <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { resetTreeState(); setViewId(snapshot.id); }} disabled={snapshot.id === current.id}>
                   <span>Version {String(index + 1).padStart(2, '0')}{index === snapshots.length - 1 && <em>latest</em>}</span>
                   <b>{snapshot.label}</b>
                   <code>{snapshot.rootHash}</code>
