@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ProllyEngine, type GrowthResult, type InsertionOrderResult } from './engine';
 import { countSharedNodes, diffRows, estimateMutationSplitProbability, leafNodes, traceRange, traceSearch } from './prolly';
 import { calculateVersionStorage, countHistoricalTreeChunks } from './storage';
+import { calculateMutationCost } from './mutationCost';
 import type { LookupResult, ProllyNode, TreeSnapshot } from './types';
 import { InfoTip } from './components/InfoTip';
+import { MutationCostPanel } from './components/MutationCostPanel';
 import { NodeInspector } from './components/NodeInspector';
 import { TreeCanvas } from './components/TreeCanvas';
 
@@ -307,6 +309,9 @@ function App() {
     };
   }, [current, diffBaseline, previous]);
   const storageMetrics = useMemo(() => calculateVersionStorage(snapshots), [snapshots]);
+  const mutationCost = useMemo(() => current && previous
+    ? calculateMutationCost(current, previous, diffRows(previous.rows, current.rows))
+    : undefined, [current, previous]);
 
   const selectedNode: ProllyNode | undefined = selectedHash ? current?.nodes.get(selectedHash) : undefined;
 
@@ -564,6 +569,14 @@ function App() {
             <div className="tree-storage-note">
               Leaf chunks store encoded keys and SQL values. Internal chunks store delimiter keys and child addresses. Select a chunk to inspect it.
             </div>
+            {mutationCost && <MutationCostPanel cost={mutationCost} label={current.label} split={metrics.tree.splitDelta > 0} onHighlight={(hashes) => {
+              cancelAnimation();
+              setTrace(new Set());
+              setLookupResult(undefined);
+              setDiffHighlight(new Set(hashes));
+              setLastChangeActive(false);
+              setSelectedHash(undefined);
+            }} />}
           </>
         )}
 
