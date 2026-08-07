@@ -29,6 +29,15 @@ export interface GrowthResult {
   added: number;
 }
 
+export interface GarbageCollectionResult {
+  head: TreeSnapshot;
+  message: string;
+  beforeChunks: number;
+  afterChunks: number;
+  beforeBytes: number;
+  afterBytes: number;
+}
+
 export interface InsertionOrderBuild {
   order: number[];
   updates: number[];
@@ -68,12 +77,12 @@ export class ProllyEngine {
     return new this.sqlite3.oo1.DB(`/prolly-tree-lab-${Date.now()}-${Math.random()}.db`, 'c') as Db;
   }
 
-  private createSchema() {
-    this.db.exec('CREATE TABLE prolly_rows(id INTEGER PRIMARY KEY, value TEXT NOT NULL)');
+  private createSchema(db = this.db) {
+    db.exec('CREATE TABLE prolly_rows(id INTEGER PRIMARY KEY, value TEXT NOT NULL)');
   }
 
-  private rows(): RowValue[] {
-    return this.db.selectObjects('SELECT id, value FROM prolly_rows ORDER BY id').map((row) => ({
+  private rows(db = this.db): RowValue[] {
+    return db.selectObjects('SELECT id, value FROM prolly_rows ORDER BY id').map((row) => ({
       key: Number(row.id),
       value: String(row.value),
     }));
@@ -87,9 +96,13 @@ export class ProllyEngine {
   }
 
   capture(label: string): TreeSnapshot {
-    const rows = this.rows();
-    const catalogHash = String(this.db.selectValue('SELECT dolt_hashof_catalog()'));
-    const bytes = exportDatabase(this.sqlite3.wasm, this.db.pointer);
+    return this.captureDb(this.db, label);
+  }
+
+  private captureDb(db: Db, label: string): TreeSnapshot {
+    const rows = this.rows(db);
+    const catalogHash = String(db.selectValue('SELECT dolt_hashof_catalog()'));
+    const bytes = exportDatabase(this.sqlite3.wasm, db.pointer);
     const image = parseChunkStore(bytes);
     const { root, nodes } = findTableRoot(image.chunks, rows.map((row) => row.key), catalogHash);
     const rootHash = root.hash;
@@ -188,6 +201,44 @@ export class ProllyEngine {
     }
     candidate.label = `No new level after ${limit} inserts`;
     return { before, after: candidate, added: limit };
+  }
+
+  garbageCollect(): GarbageCollectionResult {
+    const beforeBytes = exportDatabase(this.sqlite3.wasm, this.db.pointer);
+    const beforeImage = parseChunkStore(beforeBytes);
+    const beforeCatalogHash = String(this.db.selectValue('SELECT dolt_hashof_catalog()'));
+    const rows = this.rows();
+    const beforeRoot = findTableRoot(beforeImage.chunks, rows.map((row) => row.key), beforeCatalogHash).root.hash;
+    const replacement = this.openDb();
+    try {
+      this.createSchema(replacement);
+      replacement.exec('BEGIN');
+      try {
+        for (const row of rows) {
+          replacement.exec({ sql: 'INSERT INTO prolly_rows(id, value) VALUES (?, ?)', bind: [row.key, row.value] });
+        }
+        replacement.exec('COMMIT');
+      } catch (cause) {
+        replacement.exec('ROLLBACK');
+        throw cause;
+      }
+      const head = this.captureDb(replacement, 'Garbage collected');
+      if (head.rootHash !== beforeRoot) throw new Error('HEAD root changed during garbage collection');
+      const previous = this.db;
+      this.db = replacement;
+      previous.close();
+      return {
+        head,
+        message: `${Math.max(0, beforeImage.chunks.size - head.chunksInStore)} chunks removed, ${head.chunksInStore} chunks kept`,
+        beforeChunks: beforeImage.chunks.size,
+        afterChunks: head.chunksInStore,
+        beforeBytes: beforeBytes.length,
+        afterBytes: head.databaseBytes,
+      };
+    } catch (cause) {
+      replacement.close();
+      throw cause;
+    }
   }
 
   reset(count = 240) {

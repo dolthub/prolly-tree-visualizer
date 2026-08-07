@@ -1,15 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ProllyEngine, type GrowthResult, type InsertionOrderResult } from './engine';
 import { countSharedNodes, diffRows, estimateMutationSplitProbability, leafNodes, traceRange, traceSearch } from './prolly';
+import { calculateVersionStorage } from './storage';
 import type { LookupResult, ProllyNode, TreeSnapshot } from './types';
 import { InfoTip } from './components/InfoTip';
 import { NodeInspector } from './components/NodeInspector';
 import { TreeCanvas } from './components/TreeCanvas';
 
-type Tab = 'tree' | 'diff' | 'chunks' | 'order';
+type Tab = 'tree' | 'diff' | 'chunks' | 'storage' | 'order';
 type ControlMode = 'modify' | 'lookup';
 const NO_HIGHLIGHTS = new Set<string>();
 const NO_ROW_DIFFS: [] = [];
+
+interface GarbageCollectionReport {
+  versionsBefore: number;
+  versionsRemoved: number;
+  treeChunksBefore: number;
+  sharedTreeChunksBefore: number;
+  beforeChunks: number;
+  afterChunks: number;
+  beforeBytes: number;
+  afterBytes: number;
+  message: string;
+}
 
 function formatProbability(probability: number) {
   const percent = probability * 100;
@@ -31,6 +44,11 @@ function nextEditValue(key: number, currentValue: string) {
   return `${prefix}${Number.isSafeInteger(revision) ? revision : 1}`;
 }
 
+function formatStorageDelta(before: number, after: number, suffix = '') {
+  const delta = after - before;
+  return `${delta > 0 ? '+' : delta < 0 ? '−' : ''}${Math.abs(delta).toLocaleString()}${suffix}`;
+}
+
 function App() {
   const engineRef = useRef<ProllyEngine | undefined>(undefined);
   const operationPendingRef = useRef(false);
@@ -42,6 +60,7 @@ function App() {
   const [tab, setTab] = useState<Tab>('tree');
   const [controlMode, setControlMode] = useState<ControlMode>('modify');
   const [busy, setBusy] = useState(true);
+  const [gcRunning, setGcRunning] = useState(false);
   const [error, setError] = useState<string>();
   const [keyInput, setKeyInput] = useState('49');
   const [valueInput, setValueInput] = useState('value-49');
@@ -57,6 +76,7 @@ function App() {
   const [lastChangeActive, setLastChangeActive] = useState(false);
   const [insertionOrderResult, setInsertionOrderResult] = useState<InsertionOrderResult>();
   const [orderSelectedHash, setOrderSelectedHash] = useState<string>();
+  const [gcReport, setGcReport] = useState<GarbageCollectionReport>();
 
   const latest = snapshots.at(-1);
   const viewedIndex = viewId === undefined
@@ -222,6 +242,50 @@ function App() {
     }, 20);
   };
 
+  const runGarbageCollection = () => {
+    const engine = engineRef.current;
+    if (!engine || operationPendingRef.current || snapshots.length === 0) return;
+    const storageBefore = calculateVersionStorage(snapshots);
+    operationPendingRef.current = true;
+    setBusy(true);
+    setGcRunning(true);
+    setError(undefined);
+    window.setTimeout(() => {
+      try {
+        const result = engine.garbageCollect();
+        setSnapshots([result.head]);
+        setViewId(undefined);
+        setCompareFromId(result.head.id);
+        setTrace(new Set());
+        cancelAnimation();
+        setLookupResult(undefined);
+        setDiffHighlight(new Set());
+        setLastChangeActive(false);
+        setSelectedHash(undefined);
+        setInsertionOrderResult(undefined);
+        setOrderSelectedHash(undefined);
+        selectExistingInputs(result.head);
+        setGcReport({
+          versionsBefore: storageBefore.versions,
+          versionsRemoved: Math.max(0, storageBefore.versions - 1),
+          treeChunksBefore: storageBefore.withoutSharing,
+          sharedTreeChunksBefore: storageBefore.withSharing,
+          beforeChunks: result.beforeChunks,
+          afterChunks: result.afterChunks,
+          beforeBytes: result.beforeBytes,
+          afterBytes: result.afterBytes,
+          message: result.message,
+        });
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        operationPendingRef.current = false;
+        setGcRunning(false);
+        setBusy(false);
+      }
+    }, 20);
+  };
+
   const metrics = useMemo(() => {
     if (!current) return undefined;
     const leaves = leafNodes(current.root);
@@ -242,6 +306,7 @@ function App() {
       diff: compare(diffBaseline),
     };
   }, [current, diffBaseline, previous]);
+  const storageMetrics = useMemo(() => calculateVersionStorage(snapshots), [snapshots]);
 
   const selectedNode: ProllyNode | undefined = selectedHash ? current?.nodes.get(selectedHash) : undefined;
 
@@ -408,6 +473,7 @@ function App() {
                     setLastChangeActive(false);
                     setInsertionOrderResult(undefined);
                     setOrderSelectedHash(undefined);
+                    setGcReport(undefined);
                     selectExistingInputs(snapshot);
                   } finally {
                     setBusy(false);
@@ -451,15 +517,16 @@ function App() {
       )}
 
       {error && <div className="error-banner"><strong>Engine error</strong><span>{error}</span><button onClick={() => setError(undefined)}>×</button></div>}
-      {busy && <div className="busy-bar"><span /> DoltLite is rebuilding and hashing the tree…</div>}
+      {busy && <div className="busy-bar"><span /> {gcRunning ? 'DoltLite is collecting unreachable chunks…' : 'DoltLite is rebuilding and hashing the tree…'}</div>}
 
-      <div className="workbench-layout">
+      <div className={tab === 'order' ? 'workbench-layout order-mode' : 'workbench-layout'}>
         <div className="workbench-main">
           <nav className="tabs" aria-label="Visualizer views">
             {([
               ['tree', 'Tree'],
               ['diff', `Fast diff${metrics.diff.rowDiffs.length ? ` · ${metrics.diff.rowDiffs.length}` : ''}`],
               ['chunks', `Chunk boundaries · ${metrics.leaves.length}`],
+              ['storage', 'Storage'],
               ['order', 'History independence'],
             ] as [Tab, string][]).map(([id, label]) => (
               <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>
@@ -558,6 +625,60 @@ function App() {
           </section>
         )}
 
+        {tab === 'storage' && (
+          <section className="panel-view storage-view">
+            <div className="data-view-head storage-head">
+              <div>
+                <h2>Storage <InfoTip>Counts here cover the live chunks in the visualized prolly tree. The physical DoltLite store also contains catalogs and engine metadata.</InfoTip></h2>
+                <span>{storageMetrics.versions} {storageMetrics.versions === 1 ? 'version' : 'versions'}</span>
+              </div>
+              <div className="storage-actions">
+                <span>Keep HEAD only <InfoTip>Removes earlier versions from this lab and rebuilds the browser’s DoltLite database from HEAD.</InfoTip></span>
+                <button disabled={busy} onClick={runGarbageCollection}>{gcRunning ? 'Collecting…' : 'Garbage collect'}</button>
+              </div>
+            </div>
+
+            <div className="storage-comparison">
+              <article>
+                <span>Without structural sharing <em>theoretical</em></span>
+                <b>{storageMetrics.withoutSharing.toLocaleString()}</b>
+                <small>live tree chunks counted once per version</small>
+              </article>
+              <article className="shared-storage-card">
+                <span>With structural sharing</span>
+                <b>{storageMetrics.withSharing.toLocaleString()}</b>
+                <small>distinct live tree content addresses</small>
+              </article>
+              <article className="saved-storage-card">
+                <span>Chunks shared</span>
+                <b>{storageMetrics.savedChunks.toLocaleString()}</b>
+                <small>{Math.round(storageMetrics.savedFraction * 100)}% fewer chunks across history</small>
+              </article>
+            </div>
+
+            <div className="storage-ratio" aria-label={`${storageMetrics.withSharing} distinct chunks out of ${storageMetrics.withoutSharing} chunks without sharing`}>
+              <span style={{ width: `${storageMetrics.withoutSharing === 0 ? 0 : storageMetrics.withSharing / storageMetrics.withoutSharing * 100}%` }} />
+            </div>
+
+            <div className="physical-storage">
+              <div><span>Physical DoltLite store</span><b>{(latest?.chunksInStore ?? current.chunksInStore).toLocaleString()} chunks</b></div>
+              <div><span>Exported database</span><b>{(latest?.databaseBytes ?? current.databaseBytes).toLocaleString()} B</b></div>
+            </div>
+
+            {gcReport && (
+              <div className="gc-report" role="status">
+                <div className="gc-report-head"><span>Last garbage collection</span><strong>{gcReport.message}</strong></div>
+                <div className="gc-deltas">
+                  <div><span>Versions</span><b>{gcReport.versionsBefore} → 1</b><em>−{gcReport.versionsRemoved}</em></div>
+                  <div><span>Stored chunks</span><b>{gcReport.beforeChunks.toLocaleString()} → {gcReport.afterChunks.toLocaleString()}</b><em>{formatStorageDelta(gcReport.beforeChunks, gcReport.afterChunks)}</em></div>
+                  <div><span>Database bytes</span><b>{gcReport.beforeBytes.toLocaleString()} → {gcReport.afterBytes.toLocaleString()}</b><em>{formatStorageDelta(gcReport.beforeBytes, gcReport.afterBytes, ' B')}</em></div>
+                </div>
+                <small>Before collection: {gcReport.treeChunksBefore.toLocaleString()} theoretical tree chunks, {gcReport.sharedTreeChunksBefore.toLocaleString()} with structural sharing.</small>
+              </div>
+            )}
+          </section>
+        )}
+
         {tab === 'order' && (
           <section className="panel-view history-order-view">
             <div className="history-order-head">
@@ -606,9 +727,9 @@ function App() {
           </main>
         </div>
 
-        <aside className="timeline-section" aria-label="Version history">
+        {tab !== 'order' && <aside className="timeline-section" aria-label="Version history">
           <div className="timeline-head">
-            <div><span className="eyebrow">Version graph</span><h2>History <InfoTip dark>Select a version to render its tree. Highlights compare it only with the version immediately before it.</InfoTip></h2></div>
+            <div><h2>History <InfoTip dark>Select a version to render its tree. Highlights compare it only with the version immediately before it.</InfoTip></h2></div>
           </div>
           <div className="timeline">
             {[...snapshots].reverse().map((snapshot, reverseIndex) => {
@@ -623,14 +744,14 @@ function App() {
               );
             })}
           </div>
-        </aside>
+        </aside>}
       </div>
 
-      <footer>
+      {tab !== 'order' && <footer>
         <span>Runs entirely in your browser. No database server, no simulated tree.</span>
         <a href="https://www.dolthub.com/docs/architecture/storage-engine/prolly-tree/" target="_blank" rel="noreferrer">Read more about Prolly Trees</a>
         <span>DoltLite format v12 · {current.databaseBytes.toLocaleString()} B exported · {current.chunksInStore} stored chunks</span>
-      </footer>
+      </footer>}
     </div>
   );
 }

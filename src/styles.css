@@ -86,6 +86,7 @@ code { font-family: var(--mono); }
 .diff-lookup-button.active { color: #fff; border-color: var(--blue) !important; background: var(--blue) !important; }
 
 .workbench-layout { margin: 0 4vw 40px; display: grid; grid-template-columns: minmax(0, 1fr) 340px; align-items: start; gap: 20px; }
+.workbench-layout.order-mode { grid-template-columns: minmax(0, 1fr); }
 .workbench-main { min-width: 0; }
 .tabs { padding: 0; display: flex; gap: 28px; border-bottom: 1px solid var(--line); }
 .tabs button { border: 0; border-bottom: 3px solid transparent; background: none; padding: 15px 1px 13px; cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 700; }
@@ -210,6 +211,39 @@ code { font-family: var(--mono); }
 .chunk-row strong { font-family: var(--mono); font-weight: 500; }
 .chunk-head { background: #f1f2ed; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; font-size: 9px; cursor: default; }
 
+.storage-head > div:first-child > span { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; }
+.storage-actions { display: flex; align-items: center; gap: 12px; }
+.storage-actions > span { display: flex; align-items: center; color: var(--muted); font-size: 10px; }
+.storage-actions button { height: 42px; border: 1px solid #b74f39; border-radius: 9px; background: #fff; color: #a44734; padding: 0 15px; cursor: pointer; font-size: 11px; font-weight: 800; }
+.storage-actions button:hover:not(:disabled) { background: #fff4ef; }
+.storage-actions button:disabled { opacity: .5; cursor: wait; }
+.storage-comparison { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 28px; }
+.storage-comparison article { min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: #f1f3f8; padding: 20px; }
+.storage-comparison article.shared-storage-card { border-color: #9cc6b8; background: var(--green-soft); }
+.storage-comparison article.saved-storage-card { border-color: #b9c8f3; background: var(--blue-soft); }
+.storage-comparison article > span { display: flex; min-height: 30px; align-items: flex-start; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 10px; font-weight: 700; }
+.storage-comparison article > span em { border: 1px solid #c7cbd6; border-radius: 999px; padding: 2px 6px; font-size: 7px; font-style: normal; letter-spacing: .06em; text-transform: uppercase; }
+.storage-comparison article > b { display: block; margin: 11px 0 7px; font: 500 34px var(--mono); }
+.storage-comparison article > small { color: var(--muted); font-size: 9px; line-height: 1.5; }
+.storage-ratio { height: 9px; margin: 15px 2px 28px; overflow: hidden; border-radius: 999px; background: #dfe2e9; }
+.storage-ratio span { display: block; height: 100%; border-radius: inherit; background: var(--green); transition: width .3s ease; }
+.physical-storage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: 11px; }
+.physical-storage div { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 15px 17px; }
+.physical-storage div + div { border-left: 1px solid var(--line); }
+.physical-storage span { color: var(--muted); font-size: 10px; }
+.physical-storage b { font: 500 12px var(--mono); }
+.gc-report { margin-top: 20px; overflow: hidden; border: 1px solid #9cc6b8; border-radius: 12px; background: #f1faf6; }
+.gc-report-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #b8d8cd; padding: 13px 15px; }
+.gc-report-head span { color: var(--green); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.gc-report-head strong { font: 500 10px var(--mono); }
+.gc-deltas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.gc-deltas div { display: grid; grid-template-columns: 1fr auto; gap: 8px; border-right: 1px solid #cce2da; padding: 15px; }
+.gc-deltas div:last-child { border-right: 0; }
+.gc-deltas span { grid-column: 1 / 3; color: var(--muted); font-size: 9px; }
+.gc-deltas b { overflow-wrap: anywhere; font: 500 11px var(--mono); }
+.gc-deltas em { color: var(--green); font: 500 10px var(--mono); font-style: normal; text-align: right; }
+.gc-report > small { display: block; border-top: 1px solid #cce2da; padding: 11px 15px; color: var(--muted); font-size: 9px; }
+
 .history-order-head { display: flex; align-items: center; justify-content: space-between; gap: 30px; }
 .history-order-head h2 { margin: 0; font-size: 28px; letter-spacing: -.045em; }
 .history-order-head p { margin: 7px 0 0; color: var(--muted); font-size: 11px; }
@@ -232,7 +266,7 @@ code { font-family: var(--mono); }
 
 .timeline-section { position: sticky; top: 92px; height: calc(100vh - 112px); min-height: 420px; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #1f2942; border-radius: 16px; background: #050b30; color: #fff; }
 .timeline-head { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: end; gap: 20px; padding: 21px 20px 17px; border-bottom: 1px solid #263253; }
-.timeline-head h2 { margin: 5px 0 0; font-size: 22px; letter-spacing: -.04em; }
+.timeline-head h2 { margin: 0; font-size: 22px; letter-spacing: -.04em; }
 .timeline { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; padding: 16px 14px 22px 43px; }
 .timeline button { position: relative; flex: 0 0 auto; width: 100%; min-height: 116px; margin: 0 0 10px; border: 1px solid #3b4b72; background: #0c1a32; color: #fff; border-radius: 11px; text-align: left; padding: 13px 14px; cursor: pointer; }
 .timeline button::before { content: ''; position: absolute; left: -25px; top: 22px; bottom: -33px; width: 2px; background: #3b4b72; }
@@ -321,6 +355,11 @@ footer a:hover { text-decoration: underline; }
   .row-diff em { display: none; }
   .chunk-row { grid-template-columns: 30px 1fr 60px; }
   .chunk-row > :nth-child(4), .chunk-row > :nth-child(5), .chunk-row > :nth-child(6) { display: none; }
+  .storage-head, .storage-actions { align-items: flex-start; flex-direction: column; }
+  .storage-comparison, .physical-storage, .gc-deltas { grid-template-columns: 1fr; }
+  .physical-storage div + div { border-top: 1px solid var(--line); border-left: 0; }
+  .gc-deltas div { border-right: 0; border-bottom: 1px solid #cce2da; }
+  .gc-deltas div:last-child { border-bottom: 0; }
   .history-order-head { align-items: flex-start; flex-direction: column; }
   .history-match { align-items: flex-start; flex-direction: column; }
   .history-match span { border-left: 0; padding-left: 0; white-space: normal; }
