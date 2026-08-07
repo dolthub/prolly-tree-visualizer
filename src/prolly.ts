@@ -116,7 +116,62 @@ export function buildTree(rootHash: string, chunks: Map<string, Uint8Array>) {
   return { root: visit(rootHash), nodes };
 }
 
-export function findTableRoot(chunks: Map<string, Uint8Array>, rowKeys: number[]) {
+function tableRootFromCatalog(chunks: Map<string, Uint8Array>, catalogHash: string, tableName: string) {
+  const bytes = chunks.get(catalogHash);
+  if (!bytes) throw new Error(`catalog chunk ${catalogHash} is missing from the export`);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const format = bytes[0];
+  if (format !== 0x44 && format !== 0x45 && format !== 0x46) {
+    throw new Error(`chunk ${catalogHash} is not a DoltLite catalog`);
+  }
+  assertRange(bytes, 1, 4, `catalog ${catalogHash} header`);
+  const count = view.getUint32(1, true);
+  let cursor = format === 0x46 ? 13 : 5;
+  const decoder = new TextDecoder();
+
+  for (let index = 0; index < count; index += 1) {
+    assertRange(bytes, cursor, 45, `catalog ${catalogHash} entry ${index}`);
+    cursor += 5;
+    const rootHash = toHex(bytes.subarray(cursor, cursor + HASH_SIZE));
+    cursor += HASH_SIZE * 2;
+
+    if (format === 0x44) {
+      assertRange(bytes, cursor, 2, `catalog ${catalogHash} name length`);
+      const nameLength = view.getUint16(cursor, true);
+      cursor += 2;
+      assertRange(bytes, cursor, nameLength, `catalog ${catalogHash} name`);
+      const name = decoder.decode(bytes.subarray(cursor, cursor + nameLength));
+      cursor += nameLength;
+      if (name === tableName) return rootHash;
+      continue;
+    }
+
+    assertRange(bytes, cursor, 6, `catalog ${catalogHash} name lengths`);
+    const typeLength = view.getUint16(cursor, true);
+    const nameLength = view.getUint16(cursor + 2, true);
+    const tableLength = view.getUint16(cursor + 4, true);
+    cursor += 6;
+    assertRange(bytes, cursor, typeLength + nameLength + tableLength, `catalog ${catalogHash} names`);
+    const type = decoder.decode(bytes.subarray(cursor, cursor + typeLength));
+    cursor += typeLength;
+    const name = decoder.decode(bytes.subarray(cursor, cursor + nameLength));
+    cursor += nameLength + tableLength;
+    if (type === 'table' && name === tableName) return rootHash;
+  }
+  throw new Error(`table ${tableName} is missing from catalog ${catalogHash}`);
+}
+
+export function findTableRoot(chunks: Map<string, Uint8Array>, rowKeys: number[], catalogHash?: string, tableName = 'prolly_rows') {
+  if (catalogHash) {
+    const tree = buildTree(tableRootFromCatalog(chunks, catalogHash, tableName), chunks);
+    const actual = leafNodes(tree.root).flatMap((leaf) => leaf.entries.map((entry) => entry.key));
+    const wanted = [...rowKeys].sort((left, right) => left - right);
+    if (actual.length !== wanted.length || !actual.every((key, index) => key === wanted[index])) {
+      throw new Error(`catalog root for ${tableName} does not contain the ${rowKeys.length} SQL rows`);
+    }
+    return tree;
+  }
+
   const prollyNodes = new Map<string, ProllyNode>();
   const referenced = new Set<string>();
   for (const [hash, bytes] of chunks) {

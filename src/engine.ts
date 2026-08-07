@@ -88,9 +88,10 @@ export class ProllyEngine {
 
   capture(label: string): TreeSnapshot {
     const rows = this.rows();
+    const catalogHash = String(this.db.selectValue('SELECT dolt_hashof_catalog()'));
     const bytes = exportDatabase(this.sqlite3.wasm, this.db.pointer);
     const image = parseChunkStore(bytes);
-    const { root, nodes } = findTableRoot(image.chunks, rows.map((row) => row.key));
+    const { root, nodes } = findTableRoot(image.chunks, rows.map((row) => row.key), catalogHash);
     const rootHash = root.hash;
     return {
       id: this.snapshotId++,
@@ -220,9 +221,10 @@ export class ProllyEngine {
           db.exec({ sql: 'UPDATE prolly_rows SET value = ? WHERE id = ?', bind: [update.value, update.key] });
           updates.push(update.key);
         }
+        const catalogHash = String(db.selectValue('SELECT dolt_hashof_catalog()'));
         const bytes = exportDatabase(this.sqlite3.wasm, db.pointer);
         const image = parseChunkStore(bytes);
-        const { root, nodes } = findTableRoot(image.chunks, rows.map((row) => row.key));
+        const { root, nodes } = findTableRoot(image.chunks, rows.map((row) => row.key), catalogHash);
         if (root.level !== 1 || root.children.length !== 2 || nodes.size !== 3) {
           throw new Error(`history-independence demo expected 3 live nodes, found ${nodes.size}`);
         }

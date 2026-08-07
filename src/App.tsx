@@ -9,10 +9,6 @@ type Tab = 'tree' | 'diff' | 'chunks' | 'order';
 const NO_HIGHLIGHTS = new Set<string>();
 const NO_ROW_DIFFS: [] = [];
 
-function shortHash(hash: string) {
-  return `${hash.slice(0, 10)}…${hash.slice(-6)}`;
-}
-
 function formatProbability(probability: number) {
   const percent = probability * 100;
   if (percent === 0) return '0%';
@@ -42,6 +38,7 @@ function App() {
   const [rangeStart, setRangeStart] = useState('1');
   const [rangeEnd, setRangeEnd] = useState('48');
   const [trace, setTrace] = useState<Set<string>>(new Set());
+  const [lookupResult, setLookupResult] = useState<{ key: number; found: boolean }>();
   const [diffHighlight, setDiffHighlight] = useState<Set<string>>(new Set());
   const [lastChangeActive, setLastChangeActive] = useState(false);
   const [insertionOrderResult, setInsertionOrderResult] = useState<InsertionOrderResult>();
@@ -56,8 +53,30 @@ function App() {
   const baselineIndex = requestedBaselineIndex >= 0 && requestedBaselineIndex < viewedIndex
     ? requestedBaselineIndex
     : viewedIndex > 0 ? 0 : -1;
-  const baseline = baselineIndex >= 0 ? snapshots[baselineIndex] : undefined;
+  const diffBaseline = baselineIndex >= 0 ? snapshots[baselineIndex] : undefined;
+  const previous = viewedIndex > 0 ? snapshots[viewedIndex - 1] : undefined;
   const viewingHistorical = Boolean(current && latest && current.id !== latest.id);
+
+  const selectExistingInputs = (snapshot: TreeSnapshot) => {
+    const first = snapshot.rows[0];
+    const middle = snapshot.rows[Math.floor(snapshot.rows.length / 2)];
+    const quarter = snapshot.rows[Math.floor(snapshot.rows.length / 4)];
+    if (!first || !middle || !quarter) {
+      setKeyInput('');
+      setValueInput('');
+      setDeleteInput('');
+      setSearchInput('');
+      setRangeStart('');
+      setRangeEnd('');
+      return;
+    }
+    setKeyInput(String(middle.key));
+    setValueInput(middle.value);
+    setDeleteInput(String(first.key));
+    setSearchInput(String(middle.key));
+    setRangeStart(String(first.key));
+    setRangeEnd(String(quarter.key));
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -70,12 +89,7 @@ function App() {
       const first = engine.seed();
       setSnapshots([first]);
       setCompareFromId(first.id);
-      setKeyInput(String(first.rows.at(-1)!.key + 1));
-      setValueInput(`value-${first.rows.at(-1)!.key + 1}`);
-      setDeleteInput(String(first.rows[0].key));
-      setSearchInput(String(first.rows[Math.floor(first.rows.length / 2)].key));
-      setRangeStart(String(first.rows[0].key));
-      setRangeEnd(String(first.rows[Math.floor(first.rows.length / 4)].key));
+      selectExistingInputs(first);
       setError(undefined);
       setBusy(false);
     }).catch((cause: unknown) => {
@@ -92,12 +106,13 @@ function App() {
     setSnapshots((existing) => [...existing, snapshot]);
     setViewId(undefined);
     setTrace(new Set());
+    setLookupResult(undefined);
     setDiffHighlight(new Set());
     setLastChangeActive(false);
     setSelectedHash(undefined);
     setInsertionOrderResult(undefined);
     setOrderSelectedHash(undefined);
-    setKeyInput(String((snapshot.rows.at(-1)?.key ?? 0) + 1));
+    selectExistingInputs(snapshot);
   };
 
   const run = (operation: (engine: ProllyEngine) => TreeSnapshot) => {
@@ -140,17 +155,23 @@ function App() {
   const metrics = useMemo(() => {
     if (!current) return undefined;
     const leaves = leafNodes(current.root);
-    const shared = baseline ? countSharedNodes(baseline.nodes, current.nodes) : 0;
-    const beforeLeaves = baseline ? leafNodes(baseline.root).length : leaves.length;
+    const compare = (before?: TreeSnapshot) => {
+      const shared = before ? countSharedNodes(before.nodes, current.nodes) : 0;
+      const beforeLeaves = before ? leafNodes(before.root).length : leaves.length;
+      return {
+        shared,
+        fresh: before ? current.nodes.size - shared : 0,
+        replaced: before ? before.nodes.size - shared : 0,
+        splitDelta: leaves.length - beforeLeaves,
+        rowDiffs: before ? diffRows(before.rows, current.rows) : [],
+      };
+    };
     return {
       leaves,
-      shared,
-      fresh: baseline ? current.nodes.size - shared : 0,
-      replaced: baseline ? baseline.nodes.size - shared : 0,
-      splitDelta: leaves.length - beforeLeaves,
-      rowDiffs: baseline ? diffRows(baseline.rows, current.rows) : [],
+      tree: compare(previous),
+      diff: compare(diffBaseline),
     };
-  }, [baseline, current]);
+  }, [current, diffBaseline, previous]);
 
   const selectedNode: ProllyNode | undefined = selectedHash ? current?.nodes.get(selectedHash) : undefined;
 
@@ -167,16 +188,16 @@ function App() {
     return <main className="loading-screen error-screen"><h1>Could not start the lab</h1><p>{error}</p></main>;
   }
 
-  const previous = viewedIndex > 0 ? snapshots[viewedIndex - 1] : undefined;
   const highlightedRowDiffs = lastChangeActive && previous
     ? diffRows(previous.rows, current.rows)
     : [];
-  const diffBeforeRoot = baseline?.rootHash ?? current.rootHash;
+  const diffBeforeRoot = diffBaseline?.rootHash ?? current.rootHash;
 
   const doSearch = () => {
     const key = Number(searchInput);
     if (!Number.isSafeInteger(key)) return;
     setTrace(new Set(traceSearch(current.root, key)));
+    setLookupResult({ key, found: current.rows.some((row) => row.key === key) });
     setDiffHighlight(new Set());
     setLastChangeActive(false);
     setTab('tree');
@@ -187,6 +208,7 @@ function App() {
     const end = Number(rangeEnd);
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return;
     setTrace(new Set(traceRange(current.root, start, end)));
+    setLookupResult(undefined);
     setDiffHighlight(new Set());
     setLastChangeActive(false);
     setTab('tree');
@@ -202,6 +224,7 @@ function App() {
     if (viewedIndex <= 0) return;
     const previous = snapshots[viewedIndex - 1];
     setTrace(new Set());
+    setLookupResult(undefined);
     setDiffHighlight(new Set([...current.nodes.keys()].filter((hash) => !previous.nodes.has(hash))));
     setLastChangeActive(true);
     setSelectedHash(undefined);
@@ -240,7 +263,7 @@ function App() {
           </svg>
           <div><strong>Prolly Tree</strong></div>
         </div>
-        <a className="runtime-pill" href="https://github.com/dolthub/doltlite" target="_blank" rel="noreferrer"><span>Powered by DoltLite WASM</span><b>real engine · {engineRef.current?.version}</b></a>
+        <a className="runtime-pill" href="https://github.com/dolthub/doltlite" target="_blank" rel="noreferrer"><span>Powered by DoltLite WASM</span><b>{engineRef.current?.version}</b></a>
       </header>
 
       <section className="database-summary">
@@ -293,10 +316,12 @@ function App() {
                     setViewId(undefined);
                     setCompareFromId(snapshot.id);
                     setTrace(new Set());
+                    setLookupResult(undefined);
                     setDiffHighlight(new Set());
                     setLastChangeActive(false);
                     setInsertionOrderResult(undefined);
                     setOrderSelectedHash(undefined);
+                    selectExistingInputs(snapshot);
                   } finally {
                     setBusy(false);
                   }
@@ -310,7 +335,7 @@ function App() {
           <div className="control-section key-lookup-section">
             <label>Key lookup</label>
             <div className="control-fields">
-              <input aria-label="Search key" type="number" value={searchInput} onChange={(event) => setSearchInput(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && doSearch()} />
+              <input aria-label="Search key" type="number" value={searchInput} onChange={(event) => { setSearchInput(event.target.value); setLookupResult(undefined); }} onKeyDown={(event) => event.key === 'Enter' && doSearch()} />
               <button disabled={busy} onClick={doSearch}>Find key</button>
             </div>
           </div>
@@ -335,25 +360,27 @@ function App() {
       {viewingHistorical && (
         <div className="history-view-banner">
           <span>Viewing version {String(viewedIndex + 1).padStart(2, '0')} of {String(snapshots.length).padStart(2, '0')}. Editing is paused for historical states.</span>
-          <button onClick={() => { setViewId(undefined); setTrace(new Set()); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }}>Return to latest</button>
+          <button onClick={() => { setViewId(undefined); setTrace(new Set()); setLookupResult(undefined); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }}>Return to latest</button>
         </div>
       )}
 
       {error && <div className="error-banner"><strong>Engine error</strong><span>{error}</span><button onClick={() => setError(undefined)}>×</button></div>}
       {busy && <div className="busy-bar"><span /> DoltLite is rebuilding and hashing the tree…</div>}
 
-      <nav className="tabs" aria-label="Visualizer views">
-        {([
-          ['tree', 'Tree'],
-          ['diff', `Fast diff${metrics.rowDiffs.length ? ` · ${metrics.rowDiffs.length}` : ''}`],
-          ['chunks', `Chunk boundaries · ${metrics.leaves.length}`],
-          ['order', 'History independence'],
-        ] as [Tab, string][]).map(([id, label]) => (
-          <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>
-        ))}
-      </nav>
+      <div className="workbench-layout">
+        <div className="workbench-main">
+          <nav className="tabs" aria-label="Visualizer views">
+            {([
+              ['tree', 'Tree'],
+              ['diff', `Fast diff${metrics.diff.rowDiffs.length ? ` · ${metrics.diff.rowDiffs.length}` : ''}`],
+              ['chunks', `Chunk boundaries · ${metrics.leaves.length}`],
+              ['order', 'History independence'],
+            ] as [Tab, string][]).map(([id, label]) => (
+              <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>
+            ))}
+          </nav>
 
-      <main className="workspace">
+          <main className="workspace">
         {tab === 'tree' && (
           <>
             <div className="view-toolbar">
@@ -362,15 +389,17 @@ function App() {
                 <span><i className="legend-trace" /> lookup path</span>
                 <span><i className="legend-diff" /> changed since previous</span>
               </div>
-              {baseline && (
+              {previous && (
                 <div className="change-summary">
-                  {metrics.splitDelta > 0 && <strong>Split! +{metrics.splitDelta} leaf {metrics.splitDelta === 1 ? 'chunk' : 'chunks'}</strong>}
-                  <span>{metrics.fresh} new</span><span>{metrics.shared} shared</span><span>{metrics.replaced} replaced</span>
+                  {metrics.tree.rowDiffs.length === 0 && current.rootHash === previous.rootHash && <strong className="no-content-change">No content change · addresses unchanged</strong>}
+                  {metrics.tree.splitDelta > 0 && <strong>Split! +{metrics.tree.splitDelta} leaf {metrics.tree.splitDelta === 1 ? 'chunk' : 'chunks'}</strong>}
+                  {metrics.tree.splitDelta < 0 && <strong className="chunk-combine">Combined! {Math.abs(metrics.tree.splitDelta)} fewer leaf {metrics.tree.splitDelta === -1 ? 'chunk' : 'chunks'}</strong>}
+                  <span>{metrics.tree.fresh} new</span><span>{metrics.tree.shared} shared</span><span>{metrics.tree.replaced} replaced</span>
                 </div>
               )}
             </div>
             <div className={selectedNode ? 'tree-with-inspector open' : 'tree-with-inspector'}>
-              <TreeCanvas snapshot={current} baseline={baseline} trace={trace} diffHighlight={diffHighlight} rowDiffs={highlightedRowDiffs} selectedHash={selectedHash} onSelect={setSelectedHash} />
+              <TreeCanvas snapshot={current} baseline={previous} trace={trace} diffHighlight={diffHighlight} rowDiffs={highlightedRowDiffs} lookup={lookupResult} selectedHash={selectedHash} onSelect={setSelectedHash} />
               <NodeInspector node={selectedNode} rows={current.rows} onClose={() => setSelectedHash(undefined)} />
             </div>
             <div className="tree-storage-note">
@@ -385,7 +414,7 @@ function App() {
               <h2>Fast diff</h2>
               <div className="diff-version-picker">
                 <label htmlFor="compare-from">From</label>
-                <select id="compare-from" value={baseline?.id ?? ''} disabled={!baseline} onChange={(event) => setCompareFromId(Number(event.target.value))}>
+                <select id="compare-from" value={diffBaseline?.id ?? ''} disabled={!diffBaseline} onChange={(event) => setCompareFromId(Number(event.target.value))}>
                   {snapshots.slice(0, Math.max(0, viewedIndex)).map((snapshot, index) => (
                     <option key={snapshot.id} value={snapshot.id}>Version {String(index + 1).padStart(2, '0')} · {snapshot.label}</option>
                   ))}
@@ -394,9 +423,9 @@ function App() {
               </div>
             </div>
             <div className="diff-metrics">
-              <div><b>{metrics.shared}</b><span>subtrees skipped</span></div>
-              <div><b>{metrics.fresh}</b><span>new nodes visited</span></div>
-              <div><b>{metrics.rowDiffs.length}</b><span>row differences</span></div>
+              <div><b>{metrics.diff.shared}</b><span>subtrees skipped</span></div>
+              <div><b>{metrics.diff.fresh}</b><span>new nodes visited</span></div>
+              <div><b>{metrics.diff.rowDiffs.length}</b><span>row differences</span></div>
             </div>
             <div className="hash-compare">
               <div><small>BEFORE</small><code>{diffBeforeRoot}</code></div>
@@ -404,7 +433,7 @@ function App() {
               <div><small>AFTER</small><code>{current.rootHash}</code></div>
             </div>
             <div className="row-diff-table">
-              {metrics.rowDiffs.length === 0 ? <div className="empty-state">These snapshots contain the same rows.</div> : metrics.rowDiffs.map((diff) => (
+              {metrics.diff.rowDiffs.length === 0 ? <div className="empty-state">These snapshots contain the same rows.</div> : metrics.diff.rowDiffs.map((diff) => (
                 <div className={`row-diff ${diff.kind}`} key={diff.key}>
                   <span className="diff-sign">{diff.kind === 'added' ? '+' : diff.kind === 'deleted' ? '−' : '±'}</span>
                   <code>{diff.key}</code><span>{diff.before ?? '∅'}</span><span>→</span><span>{diff.after ?? '∅'}</span><em>{diff.kind}</em>
@@ -427,7 +456,7 @@ function App() {
             <div className="chunk-strip">
               {metrics.leaves.map((leaf, index) => (
                 <button key={leaf.hash} style={{ flexGrow: Math.max(1, leaf.entries.length) }} onClick={() => { setSelectedHash(leaf.hash); setTab('tree'); }}>
-                  <span>chunk {index + 1}</span><b>{leaf.minKey}–{leaf.maxKey}</b><small>{leaf.size} B · {leaf.entries.length} keys</small><code>{shortHash(leaf.hash)}</code>
+                  <span>chunk {index + 1}</span><b>{leaf.minKey}–{leaf.maxKey}</b><small>{leaf.size} B · {leaf.entries.length} keys</small><code>{leaf.hash}</code>
                   <em>{formatProbability(estimateMutationSplitProbability(leaf))} split chance</em>
                 </button>
               ))}
@@ -488,18 +517,28 @@ function App() {
           </section>
         )}
 
-      </main>
-
-      <section className="timeline-section">
-        <div className="timeline-head"><div><span className="eyebrow">Version timeline</span><h2>Inspect a version</h2></div><p>Select any state to render its tree. Fast diff compares it with the baseline chosen in that view.</p></div>
-        <div className="timeline">
-          {snapshots.map((snapshot, index) => (
-            <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { setViewId(snapshot.id); setTrace(new Set()); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }} disabled={snapshot.id === current.id}>
-              <span>{String(index + 1).padStart(2, '0')}</span><b>{snapshot.label}</b><code>{shortHash(snapshot.rootHash)}</code><small>{snapshot.rows.length} rows · {snapshot.nodes.size} nodes</small>
-            </button>
-          ))}
+          </main>
         </div>
-      </section>
+
+        <aside className="timeline-section" aria-label="Version history">
+          <div className="timeline-head">
+            <div><span className="eyebrow">Version graph</span><h2>History</h2></div>
+          </div>
+          <div className="timeline">
+            {[...snapshots].reverse().map((snapshot, reverseIndex) => {
+              const index = snapshots.length - reverseIndex - 1;
+              return (
+                <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { setViewId(snapshot.id); setTrace(new Set()); setLookupResult(undefined); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }} disabled={snapshot.id === current.id}>
+                  <span>Version {String(index + 1).padStart(2, '0')}{index === snapshots.length - 1 && <em>latest</em>}</span>
+                  <b>{snapshot.label}</b>
+                  <code>{snapshot.rootHash}</code>
+                  <small>{snapshot.rows.length} rows · {snapshot.nodes.size} nodes</small>
+                </button>
+              );
+            })}
+          </div>
+        </aside>
+      </div>
 
       <footer><span>Runs entirely in your browser. No database server, no simulated tree.</span><span>DoltLite format v12 · {current.databaseBytes.toLocaleString()} B exported · {current.chunksInStore} stored chunks</span></footer>
     </div>

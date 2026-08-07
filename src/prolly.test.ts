@@ -42,6 +42,32 @@ function node(level: number, keys: number[], values: Uint8Array[]) {
   ]);
 }
 
+function bytesFromHex(hex: string) {
+  return new Uint8Array(hex.match(/../g)!.map((byte) => Number.parseInt(byte, 16)));
+}
+
+function catalog(tableName: string, rootHash: string) {
+  const encoder = new TextEncoder();
+  const type = encoder.encode('table');
+  const name = encoder.encode(tableName);
+  return new Uint8Array([
+    0x46,
+    ...u32(1),
+    ...u32(0),
+    ...u32(0),
+    ...u32(2),
+    0,
+    ...bytesFromHex(rootHash),
+    ...new Uint8Array(20),
+    ...u16(type.length),
+    ...u16(name.length),
+    ...u16(name.length),
+    ...type,
+    ...name,
+    ...name,
+  ]);
+}
+
 describe('prolly node decoder', () => {
   it('decodes signed integer leaf keys and values', () => {
     const parsed = parseProllyNode('a'.repeat(40), node(0, [-2, 4], [new Uint8Array([1]), new Uint8Array([2, 3])]));
@@ -65,6 +91,21 @@ describe('prolly node decoder', () => {
     expect(traceRange(tree.root, 2, 8)).toEqual([rootHash, leftHash, rightHash]);
     expect(traceRange(tree.root, 7, 8)).toEqual([rootHash, rightHash]);
     expect(findTableRoot(chunks, [1, 3, 7, 9]).root.hash).toBe(rootHash);
+  });
+
+  it('uses the current catalog root when old roots have the same keys', () => {
+    const oldRootHash = '4'.repeat(40);
+    const currentRootHash = '5'.repeat(40);
+    const catalogHash = '6'.repeat(40);
+    const chunks = new Map([
+      [oldRootHash, node(0, [1], [new Uint8Array([1])])],
+      [currentRootHash, node(0, [1], [new Uint8Array([2])])],
+      [catalogHash, catalog('prolly_rows', currentRootHash)],
+    ]);
+
+    const tree = findTableRoot(chunks, [1], catalogHash);
+    expect(tree.root.hash).toBe(currentRootHash);
+    expect(tree.root.entries[0].valueHex).toBe('02');
   });
 });
 

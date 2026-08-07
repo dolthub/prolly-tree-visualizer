@@ -104,10 +104,10 @@ same node header, offset arrays, integer key encoding, child hashes, and subtree
 counts used by DoltLite's C implementation. SQL is used to display leaf values;
 node boundaries, levels, sizes, and addresses all come from the stored bytes.
 
-DoltLite's `dolt_hashof_table()` includes both the data root and canonical
-schema hash. The visualizer therefore identifies the physical data root among
-the exported prolly chunks by matching its in-order integer keys to the rows in
-the controlled demo table.
+DoltLite's `dolt_hashof_catalog()` supplies the current working catalog
+address. The visualizer reads that catalog chunk from the export and follows
+the `prolly_rows` entry directly to its physical data root, including after
+value-only updates whose old and new roots contain the same keys.
 
 ## Validation
 

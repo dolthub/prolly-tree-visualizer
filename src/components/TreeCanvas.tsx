@@ -8,10 +8,16 @@ interface Point {
   node: ProllyNode;
 }
 
-const NODE_WIDTH = 238;
+const NODE_WIDTH = 282;
 const NODE_HEIGHT = 126;
 const X_GAP = 34;
 const Y_GAP = 184;
+
+interface KeyLabelPart {
+  text: string;
+  match: boolean;
+  missing?: boolean;
+}
 
 function layout(root: ProllyNode, minimumWidth: number) {
   const positions = new Map<string, Point>();
@@ -47,10 +53,43 @@ function layout(root: ProllyNode, minimumWidth: number) {
   };
 }
 
-function shownKeys(node: ProllyNode) {
+export function shownKeys(node: ProllyNode, lookupKey?: number): KeyLabelPart[] {
   const keys = node.entries.map((entry) => String(entry.key));
-  if (keys.length <= 6) return keys.join('  ·  ');
-  return `${keys.slice(0, 3).join('  ·  ')}  …  ${keys.slice(-2).join('  ·  ')}`;
+  const matchIndex = lookupKey === undefined ? -1 : node.entries.findIndex((entry) => Number(entry.key) === lookupKey);
+  const indexes = keys.length <= 6
+    ? keys.map((_, index) => index)
+    : matchIndex >= 0
+      ? [...new Set([0, matchIndex, keys.length - 1])].sort((left, right) => left - right)
+      : [0, 1, 2, keys.length - 2, keys.length - 1];
+  return indexes.flatMap((index, position) => {
+    const previousIndex = indexes[position - 1];
+    const omitted = position > 0 && index - previousIndex > 1
+      ? [{ text: '…', match: false }]
+      : [];
+    return [...omitted, { text: keys[index], match: index === matchIndex }];
+  });
+}
+
+export function missingKeyLabel(node: ProllyNode, lookupKey: number): KeyLabelPart[] {
+  const keys = node.entries.map((entry) => Number(entry.key));
+  const insertionIndex = keys.findIndex((key) => key > lookupKey);
+  if (insertionIndex > 0) {
+    return [
+      { text: String(keys[insertionIndex - 1]), match: false },
+      { text: `key ${lookupKey} not found`, match: false, missing: true },
+      { text: String(keys[insertionIndex]), match: false },
+    ];
+  }
+  if (insertionIndex === 0) {
+    return [
+      { text: `key ${lookupKey} not found`, match: false, missing: true },
+      ...keys.slice(0, 2).map((key) => ({ text: String(key), match: false })),
+    ];
+  }
+  return [
+    ...keys.slice(-2).map((key) => ({ text: String(key), match: false })),
+    { text: `key ${lookupKey} not found`, match: false, missing: true },
+  ];
 }
 
 function shownChanges(changes: RowDiff[]) {
@@ -68,12 +107,13 @@ interface TreeCanvasProps {
   trace: Set<string>;
   diffHighlight: Set<string>;
   rowDiffs: RowDiff[];
+  lookup?: { key: number; found: boolean };
   compact?: boolean;
   selectedHash?: string;
   onSelect(hash: string): void;
 }
 
-export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs, compact = false, selectedHash, onSelect }: TreeCanvasProps) {
+export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs, lookup, compact = false, selectedHash, onSelect }: TreeCanvasProps) {
   const treeLayout = useMemo(() => layout(snapshot.root, compact ? 586 : 900), [compact, snapshot]);
   const rowDiffsByLeaf = useMemo(() => groupRowDiffsByLeaf(snapshot.root, rowDiffs), [snapshot, rowDiffs]);
   const baselineHashes = baseline?.nodes;
@@ -103,6 +143,9 @@ export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs,
           const isTrace = trace.has(node.hash);
           const isDiff = diffHighlight.has(node.hash);
           const isNew = Boolean(baselineHashes && !baselineHashes.has(node.hash));
+          const keyParts = lookup && !lookup.found && node.level === 0 && isTrace
+            ? missingKeyLabel(node, lookup.key)
+            : shownKeys(node, node.level === 0 && lookup?.found ? lookup.key : undefined);
           const className = [
             'tree-node',
             node.level === 0 ? 'leaf-node' : 'internal-node',
@@ -134,12 +177,14 @@ export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs,
               </text>
               <line x1="14" x2={NODE_WIDTH - 14} y1="36" y2="36" />
               <text className={nodeRowDiffs.length ? 'node-keys node-row-change' : 'node-keys'} x="15" y="61">
-                {nodeRowDiffs.length ? shownChanges(nodeRowDiffs) : shownKeys(node)}
+                {nodeRowDiffs.length ? shownChanges(nodeRowDiffs) : keyParts.map((part, index) => (
+                  <tspan key={`${part.text}-${index}`} className={part.match ? 'node-key-match' : part.missing ? 'node-key-missing' : undefined}>{index > 0 ? '  ·  ' : ''}{part.text}</tspan>
+                ))}
               </text>
               <text className="node-range" x="15" y="84">
                 {node.size.toLocaleString()} bytes
               </text>
-              <text className="node-hash" x="15" y="108">{node.hash.slice(0, 16)}…</text>
+              <text className="node-hash" x="15" y="108">{node.hash}</text>
             </g>
           );
         })}

@@ -1,0 +1,36 @@
+import { describe, expect, it } from 'vitest';
+import { missingKeyLabel, shownKeys } from './TreeCanvas';
+import type { ProllyNode } from '../types';
+
+function leaf(keys: number[]): ProllyNode {
+  return {
+    hash: '1'.repeat(40),
+    level: 0,
+    size: 100,
+    flags: 1,
+    entries: keys.map((key) => ({ key, keyHex: '', valueHex: '' })),
+    children: [],
+    minKey: keys[0],
+    maxKey: keys.at(-1)!,
+  };
+}
+
+describe('tree key labels', () => {
+  it('keeps a looked-up key visible inside a compressed leaf', () => {
+    expect(shownKeys(leaf([1, 2, 3, 4, 5, 6, 7, 8, 9]), 6)).toEqual([
+      { text: '1', match: false },
+      { text: '…', match: false },
+      { text: '6', match: true },
+      { text: '…', match: false },
+      { text: '9', match: false },
+    ]);
+  });
+
+  it('places a missing key between its surrounding keys', () => {
+    expect(missingKeyLabel(leaf([1, 4, 8, 12]), 6)).toEqual([
+      { text: '4', match: false },
+      { text: 'key 6 not found', match: false, missing: true },
+      { text: '8', match: false },
+    ]);
+  });
+});
