@@ -103,12 +103,10 @@ export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs,
           const isTrace = trace.has(node.hash);
           const isDiff = diffHighlight.has(node.hash);
           const isNew = Boolean(baselineHashes && !baselineHashes.has(node.hash));
-          const isShared = Boolean(baselineHashes?.has(node.hash));
           const className = [
             'tree-node',
             node.level === 0 ? 'leaf-node' : 'internal-node',
             isNew ? 'node-new' : '',
-            isShared ? 'node-shared' : '',
             isTrace ? 'node-trace' : '',
             isDiff ? 'node-diff' : '',
             selectedHash === node.hash ? 'node-selected' : '',
@@ -121,6 +119,7 @@ export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs,
               tabIndex={0}
               role="button"
               aria-label={`${node.level === 0 ? 'Leaf' : `Level ${node.level}`} node ${node.hash}`}
+              onMouseDown={(event) => event.preventDefault()}
               onClick={() => onSelect(node.hash)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') onSelect(node.hash);
@@ -141,7 +140,6 @@ export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs,
                 {node.size.toLocaleString()} bytes
               </text>
               <text className="node-hash" x="15" y="108">{node.hash.slice(0, 16)}…</text>
-              <circle className="hash-dot" cx={NODE_WIDTH - 20} cy="103" r="6" />
             </g>
           );
         })}

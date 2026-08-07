@@ -6,7 +6,22 @@ import { exportDatabase } from './exportDatabase';
 import { findTableRoot, leafNodes } from './prolly';
 import type { RowValue, TreeSnapshot } from './types';
 
-type Db = Awaited<ReturnType<typeof sqlite3InitModule>>['oo1']['DB'] extends new (...args: never[]) => infer T ? T : never;
+type Sqlite3 = Awaited<ReturnType<typeof sqlite3InitModule>>;
+type Db = Sqlite3['oo1']['DB'] extends new (...args: never[]) => infer T ? T : never;
+type ModuleCache = typeof globalThis & { prollyTreeSqlite3?: Promise<Sqlite3> };
+
+function loadSqlite3() {
+  const cache = globalThis as ModuleCache;
+  if (!cache.prollyTreeSqlite3) {
+    cache.prollyTreeSqlite3 = sqlite3InitModule({
+      locateFile: (filename: string) => filename === 'sqlite3.wasm' ? doltliteWasmUrl : filename,
+    }).catch((cause) => {
+      delete cache.prollyTreeSqlite3;
+      throw cause;
+    });
+  }
+  return cache.prollyTreeSqlite3;
+}
 
 export interface GrowthResult {
   before: TreeSnapshot;
@@ -31,21 +46,19 @@ export interface InsertionOrderResult {
 }
 
 export class ProllyEngine {
-  private readonly sqlite3: Awaited<ReturnType<typeof sqlite3InitModule>>;
+  private readonly sqlite3: Sqlite3;
   private db: Db;
   private snapshotId = 0;
   readonly version: string;
 
-  private constructor(sqlite3: Awaited<ReturnType<typeof sqlite3InitModule>>) {
+  private constructor(sqlite3: Sqlite3) {
     this.sqlite3 = sqlite3;
     this.db = this.openDb();
     this.version = String(this.db.selectValue('SELECT dolt_version()'));
   }
 
   static async create() {
-    const sqlite3 = await sqlite3InitModule({
-      locateFile: (filename: string) => filename === 'sqlite3.wasm' ? doltliteWasmUrl : filename,
-    });
+    const sqlite3 = await loadSqlite3();
     const engine = new ProllyEngine(sqlite3);
     engine.createSchema();
     return engine;

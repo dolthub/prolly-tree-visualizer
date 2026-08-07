@@ -43,6 +43,7 @@ function App() {
   const [rangeEnd, setRangeEnd] = useState('48');
   const [trace, setTrace] = useState<Set<string>>(new Set());
   const [diffHighlight, setDiffHighlight] = useState<Set<string>>(new Set());
+  const [lastChangeActive, setLastChangeActive] = useState(false);
   const [insertionOrderResult, setInsertionOrderResult] = useState<InsertionOrderResult>();
   const [orderSelectedHash, setOrderSelectedHash] = useState<string>();
 
@@ -92,6 +93,7 @@ function App() {
     setViewId(undefined);
     setTrace(new Set());
     setDiffHighlight(new Set());
+    setLastChangeActive(false);
     setSelectedHash(undefined);
     setInsertionOrderResult(undefined);
     setOrderSelectedHash(undefined);
@@ -151,11 +153,6 @@ function App() {
   }, [baseline, current]);
 
   const selectedNode: ProllyNode | undefined = selectedHash ? current?.nodes.get(selectedHash) : undefined;
-  const previous = viewedIndex > 0 ? snapshots[viewedIndex - 1] : undefined;
-  const highlightedRowDiffs = diffHighlight.size > 0 && previous
-    ? diffRows(previous.rows, current.rows)
-    : [];
-  const diffBeforeRoot = baseline?.rootHash ?? current.rootHash;
 
   if (busy && !current) {
     return (
@@ -170,11 +167,18 @@ function App() {
     return <main className="loading-screen error-screen"><h1>Could not start the lab</h1><p>{error}</p></main>;
   }
 
+  const previous = viewedIndex > 0 ? snapshots[viewedIndex - 1] : undefined;
+  const highlightedRowDiffs = lastChangeActive && previous
+    ? diffRows(previous.rows, current.rows)
+    : [];
+  const diffBeforeRoot = baseline?.rootHash ?? current.rootHash;
+
   const doSearch = () => {
     const key = Number(searchInput);
     if (!Number.isSafeInteger(key)) return;
     setTrace(new Set(traceSearch(current.root, key)));
     setDiffHighlight(new Set());
+    setLastChangeActive(false);
     setTab('tree');
   };
 
@@ -184,15 +188,23 @@ function App() {
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return;
     setTrace(new Set(traceRange(current.root, start, end)));
     setDiffHighlight(new Set());
+    setLastChangeActive(false);
     setTab('tree');
   };
 
   const doDiffLookup = () => {
+    if (lastChangeActive) {
+      setDiffHighlight(new Set());
+      setLastChangeActive(false);
+      setSelectedHash(undefined);
+      return;
+    }
     if (viewedIndex <= 0) return;
     const previous = snapshots[viewedIndex - 1];
-    setCompareFromId(previous.id);
     setTrace(new Set());
     setDiffHighlight(new Set([...current.nodes.keys()].filter((hash) => !previous.nodes.has(hash))));
+    setLastChangeActive(true);
+    setSelectedHash(undefined);
     setTab('tree');
   };
 
@@ -219,11 +231,16 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <div className="brand-mark"><span /><span /><span /><i /></div>
-          <div><strong>Prolly Tree Lab</strong><small>powered by DoltLite WASM</small></div>
+          <svg className="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+            <path className="brand-tree-link" d="M20 13v5M10 23v-2c0-2 1-3 3-3h14c2 0 3 1 3 3v2" />
+            <rect className="brand-root-node" x="14" y="5" width="12" height="9" rx="2.5" />
+            <rect className="brand-leaf-node" x="4" y="23" width="13" height="11" rx="2.5" />
+            <rect className="brand-leaf-node" x="23" y="23" width="13" height="11" rx="2.5" />
+            <path className="brand-hash-line" d="M8 27h5M8 30h3M27 27h5M27 30h3M18 9h4" />
+          </svg>
+          <div><strong>Prolly Tree</strong></div>
         </div>
-        <div className="runtime-pill"><span className="status-dot" /> real engine · {engineRef.current?.version}</div>
-        <a className="source-link" href="https://github.com/dolthub/doltlite" target="_blank" rel="noreferrer">DoltLite ↗</a>
+        <a className="runtime-pill" href="https://github.com/dolthub/doltlite" target="_blank" rel="noreferrer"><span>Powered by DoltLite WASM</span><b>real engine · {engineRef.current?.version}</b></a>
       </header>
 
       <section className="database-summary">
@@ -277,6 +294,7 @@ function App() {
                     setCompareFromId(snapshot.id);
                     setTrace(new Set());
                     setDiffHighlight(new Set());
+                    setLastChangeActive(false);
                     setInsertionOrderResult(undefined);
                     setOrderSelectedHash(undefined);
                   } finally {
@@ -308,7 +326,7 @@ function App() {
           <div className="control-section diff-lookup-section">
             <label>Diff lookup</label>
             <div className="control-fields">
-              <button className="diff-lookup-button" disabled={busy || viewedIndex <= 0} onClick={doDiffLookup}>Highlight last change</button>
+              <button className={lastChangeActive ? 'diff-lookup-button active' : 'diff-lookup-button'} aria-pressed={lastChangeActive} disabled={busy || viewedIndex <= 0} onClick={doDiffLookup}>{lastChangeActive ? 'Clear last change' : 'Highlight last change'}</button>
             </div>
           </div>
         </div>
@@ -317,7 +335,7 @@ function App() {
       {viewingHistorical && (
         <div className="history-view-banner">
           <span>Viewing version {String(viewedIndex + 1).padStart(2, '0')} of {String(snapshots.length).padStart(2, '0')}. Editing is paused for historical states.</span>
-          <button onClick={() => { setViewId(undefined); setTrace(new Set()); setDiffHighlight(new Set()); setSelectedHash(undefined); }}>Return to latest</button>
+          <button onClick={() => { setViewId(undefined); setTrace(new Set()); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }}>Return to latest</button>
         </div>
       )}
 
@@ -341,7 +359,6 @@ function App() {
             <div className="view-toolbar">
               <div className="legend">
                 <span><i className="legend-new" /> new address</span>
-                <span><i className="legend-shared" /> structurally shared</span>
                 <span><i className="legend-trace" /> lookup path</span>
                 <span><i className="legend-diff" /> changed since previous</span>
               </div>
@@ -477,7 +494,7 @@ function App() {
         <div className="timeline-head"><div><span className="eyebrow">Version timeline</span><h2>Inspect a version</h2></div><p>Select any state to render its tree. Fast diff compares it with the baseline chosen in that view.</p></div>
         <div className="timeline">
           {snapshots.map((snapshot, index) => (
-            <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { setViewId(snapshot.id); setTrace(new Set()); setDiffHighlight(new Set()); setSelectedHash(undefined); }} disabled={snapshot.id === current.id}>
+            <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { setViewId(snapshot.id); setTrace(new Set()); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }} disabled={snapshot.id === current.id}>
               <span>{String(index + 1).padStart(2, '0')}</span><b>{snapshot.label}</b><code>{shortHash(snapshot.rootHash)}</code><small>{snapshot.rows.length} rows · {snapshot.nodes.size} nodes</small>
             </button>
           ))}

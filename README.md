@@ -1,4 +1,4 @@
-# Prolly Tree Lab
+# Prolly Tree
 
 An interactive browser visualizer for the real prolly trees produced by
 [DoltLite](https://github.com/dolthub/doltlite). The interaction model is
