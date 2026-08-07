@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ProllyEngine, type GrowthResult, type InsertionOrderResult } from './engine';
 import { countSharedNodes, diffRows, estimateMutationSplitProbability, leafNodes, traceRange, traceSearch } from './prolly';
 import type { LookupResult, ProllyNode, TreeSnapshot } from './types';
+import { InfoTip } from './components/InfoTip';
 import { NodeInspector } from './components/NodeInspector';
 import { TreeCanvas } from './components/TreeCanvas';
 
@@ -342,7 +343,7 @@ function App() {
 
       <section className="database-summary">
         <div className="root-card">
-          <span>Tree root</span>
+          <span>Tree root <InfoTip dark>The content address of the root chunk. A rewritten tree gets a new root address; a no-op keeps it.</InfoTip></span>
           <code>{current.rootHash}</code>
           <div><b>{current.rows.length}</b> rows <i /> <b>{current.nodes.size}</b> live nodes <i /> <b>{current.root.level + 1}</b> levels</div>
         </div>
@@ -470,9 +471,9 @@ function App() {
           <>
             <div className="view-toolbar">
               <div className="legend">
-                <span><i className="legend-new" /> new address</span>
-                <span><i className="legend-trace" /> lookup path</span>
-                <span><i className="legend-diff" /> changed since previous</span>
+                <span><i className="legend-new" /> new address <InfoTip>A chunk address that did not exist in the immediately previous version.</InfoTip></span>
+                <span><i className="legend-trace" /> lookup path <InfoTip>Chunks visited while resolving the current key or range lookup.</InfoTip></span>
+                <span><i className="legend-diff" /> changed since previous <InfoTip>Chunks rewritten by the single change between this version and the version immediately before it.</InfoTip></span>
               </div>
               {previous && (
                 <div className="change-summary">
@@ -496,7 +497,7 @@ function App() {
         {tab === 'diff' && (
           <section className="panel-view diff-view">
             <div className="data-view-head">
-              <h2>Fast diff</h2>
+              <h2>Fast diff <InfoTip>Content addresses let the diff skip shared subtrees and visit only changed nodes.</InfoTip></h2>
               <div className="diff-version-picker">
                 <label htmlFor="compare-from">From</label>
                 <select id="compare-from" value={diffBaseline?.id ?? ''} disabled={!diffBaseline} onChange={(event) => setCompareFromId(Number(event.target.value))}>
@@ -531,7 +532,7 @@ function App() {
         {tab === 'chunks' && (
           <section className="panel-view chunks-view">
             <div className="data-view-head">
-              <h2>Chunk boundaries</h2>
+              <h2>Chunk boundaries <InfoTip>Content-defined boundaries decide where leaf chunks end, independent of insertion order.</InfoTip></h2>
               <div className="chunk-summary">
                 <span><b>{metrics.leaves.length}</b> leaves</span>
                 <span><b>{metrics.leaves.reduce((total, leaf) => total + leaf.size, 0).toLocaleString()}</b> live bytes</span>
@@ -547,7 +548,7 @@ function App() {
               ))}
             </div>
             <div className="chunk-table">
-              <div className="chunk-row chunk-head"><span>#</span><span>Key range</span><span>Entries</span><span>Bytes</span><span title="Estimated chance that an insert into an unused integer key inside this range creates a boundary">Split chance ⓘ</span><span>Content address</span></div>
+              <div className="chunk-row chunk-head"><span>#</span><span>Key range</span><span>Entries</span><span>Bytes</span><span>Split chance <InfoTip>Estimated chance that inserting an unused integer key in this range creates a new chunk boundary.</InfoTip></span><span>Content address</span></div>
               {metrics.leaves.map((leaf, index) => (
                 <button className="chunk-row" key={leaf.hash} onClick={() => { setSelectedHash(leaf.hash); setTab('tree'); }}>
                   <span>{index + 1}</span><span>{leaf.minKey} → {leaf.maxKey}</span><span>{leaf.entries.length}</span><span>{leaf.size.toLocaleString()}</span><strong>{formatProbability(estimateMutationSplitProbability(leaf))}</strong><code>{leaf.hash}</code>
@@ -561,7 +562,7 @@ function App() {
           <section className="panel-view history-order-view">
             <div className="history-order-head">
               <div>
-                <h2>History independence</h2>
+                <h2>History independence <InfoTip>The same final rows produce the same chunks and root address even when edits arrive in a different order.</InfoTip></h2>
                 <p>Build A inserts 180 rows in key order. Build B shuffles the inserts and rewrites 30 draft values.</p>
               </div>
               <button className="run-order-button" disabled={busy} onClick={runInsertionOrderDemo}>{insertionOrderResult ? 'Build both again' : 'Build both trees'}</button>
@@ -607,7 +608,7 @@ function App() {
 
         <aside className="timeline-section" aria-label="Version history">
           <div className="timeline-head">
-            <div><span className="eyebrow">Version graph</span><h2>History</h2></div>
+            <div><span className="eyebrow">Version graph</span><h2>History <InfoTip dark>Select a version to render its tree. Highlights compare it only with the version immediately before it.</InfoTip></h2></div>
           </div>
           <div className="timeline">
             {[...snapshots].reverse().map((snapshot, reverseIndex) => {
