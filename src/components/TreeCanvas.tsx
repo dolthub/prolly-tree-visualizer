@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { groupRowDiffsByLeaf } from '../prolly';
-import type { ProllyNode, RowDiff, TreeSnapshot } from '../types';
+import type { LookupResult, ProllyNode, RowDiff, TreeSnapshot } from '../types';
 
 interface Point {
   x: number;
@@ -53,20 +53,21 @@ function layout(root: ProllyNode, minimumWidth: number) {
   };
 }
 
-export function shownKeys(node: ProllyNode, lookupKey?: number): KeyLabelPart[] {
+export function shownKeys(node: ProllyNode, lookupKeys: number[] = []): KeyLabelPart[] {
   const keys = node.entries.map((entry) => String(entry.key));
-  const matchIndex = lookupKey === undefined ? -1 : node.entries.findIndex((entry) => Number(entry.key) === lookupKey);
+  const lookupKeySet = new Set(lookupKeys);
+  const matchIndexes = node.entries.flatMap((entry, index) => lookupKeySet.has(Number(entry.key)) ? [index] : []);
   const indexes = keys.length <= 6
     ? keys.map((_, index) => index)
-    : matchIndex >= 0
-      ? [...new Set([0, matchIndex, keys.length - 1])].sort((left, right) => left - right)
+    : matchIndexes.length > 0
+      ? [...new Set([0, ...matchIndexes, keys.length - 1])].sort((left, right) => left - right)
       : [0, 1, 2, keys.length - 2, keys.length - 1];
   return indexes.flatMap((index, position) => {
     const previousIndex = indexes[position - 1];
     const omitted = position > 0 && index - previousIndex > 1
       ? [{ text: '…', match: false }]
       : [];
-    return [...omitted, { text: keys[index], match: index === matchIndex }];
+    return [...omitted, { text: keys[index], match: matchIndexes.includes(index) }];
   });
 }
 
@@ -92,6 +93,25 @@ export function missingKeyLabel(node: ProllyNode, lookupKey: number): KeyLabelPa
   ];
 }
 
+export function routeKeyForLookup(node: ProllyNode, lookupKey: number) {
+  const entry = node.entries.find((candidate) => Number(candidate.key) >= lookupKey) ?? node.entries.at(-1);
+  return entry === undefined ? undefined : Number(entry.key);
+}
+
+export function rangeKeysForNode(node: ProllyNode, start: number, end: number) {
+  const low = Math.min(start, end);
+  const high = Math.max(start, end);
+  if (node.level > 0) {
+    return node.children.flatMap((child, index) => {
+      const childMin = Number(child.minKey);
+      const childMax = Number(child.maxKey);
+      return childMax >= low && childMin <= high ? [Number(node.entries[index].key)] : [];
+    });
+  }
+  const matches = node.entries.map((entry) => Number(entry.key)).filter((key) => key >= low && key <= high);
+  return matches.length <= 1 ? matches : [matches[0], matches.at(-1)!];
+}
+
 function shownChanges(changes: RowDiff[]) {
   if (changes.length === 1) {
     const change = changes[0];
@@ -105,15 +125,17 @@ interface TreeCanvasProps {
   snapshot: TreeSnapshot;
   baseline?: TreeSnapshot;
   trace: Set<string>;
+  activeTraceHash?: string;
   diffHighlight: Set<string>;
+  activeDiffHashes?: Set<string>;
   rowDiffs: RowDiff[];
-  lookup?: { key: number; found: boolean };
+  lookup?: LookupResult;
   compact?: boolean;
   selectedHash?: string;
   onSelect(hash: string): void;
 }
 
-export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs, lookup, compact = false, selectedHash, onSelect }: TreeCanvasProps) {
+export function TreeCanvas({ snapshot, baseline, trace, activeTraceHash, diffHighlight, activeDiffHashes, rowDiffs, lookup, compact = false, selectedHash, onSelect }: TreeCanvasProps) {
   const treeLayout = useMemo(() => layout(snapshot.root, compact ? 586 : 900), [compact, snapshot]);
   const rowDiffsByLeaf = useMemo(() => groupRowDiffsByLeaf(snapshot.root, rowDiffs), [snapshot, rowDiffs]);
   const baselineHashes = baseline?.nodes;
@@ -128,10 +150,11 @@ export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs,
               const childPoint = treeLayout.positions.get(child.hash)!;
               const changed = baselineHashes ? !baselineHashes.has(child.hash) : false;
               const highlighted = diffHighlight.has(child.hash);
+              const traced = trace.has(point.node.hash) && trace.has(child.hash);
               return (
                 <path
                   key={`${point.node.hash}-${child.hash}`}
-                  className={highlighted ? 'edge edge-diff' : changed ? 'edge edge-new' : 'edge'}
+                  className={highlighted ? 'edge edge-diff' : traced ? 'edge edge-trace' : changed ? 'edge edge-new' : 'edge'}
                   d={`M ${point.x + NODE_WIDTH / 2} ${point.y + NODE_HEIGHT} C ${point.x + NODE_WIDTH / 2} ${point.y + NODE_HEIGHT + 42}, ${childPoint.x + NODE_WIDTH / 2} ${childPoint.y - 42}, ${childPoint.x + NODE_WIDTH / 2} ${childPoint.y}`}
                 />
               );
@@ -139,13 +162,23 @@ export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs,
           )}
         </g>
         {[...treeLayout.positions.values()].map(({ node, x, y }) => {
-          const nodeRowDiffs = rowDiffsByLeaf.get(node.hash) ?? [];
+          const nodeRowDiffs = diffHighlight.has(node.hash) ? rowDiffsByLeaf.get(node.hash) ?? [] : [];
           const isTrace = trace.has(node.hash);
+          const isActiveTrace = activeTraceHash === node.hash;
           const isDiff = diffHighlight.has(node.hash);
           const isNew = Boolean(baselineHashes && !baselineHashes.has(node.hash));
-          const keyParts = lookup && !lookup.found && node.level === 0 && isTrace
+          const lookupKeys = lookup && isTrace
+            ? lookup.kind === 'range'
+              ? rangeKeysForNode(node, lookup.start, lookup.end)
+              : node.level === 0 && lookup.found
+                ? [lookup.key]
+                : node.level > 0
+                  ? [routeKeyForLookup(node, lookup.key)].filter((key): key is number => key !== undefined)
+                  : []
+            : [];
+          const keyParts = lookup?.kind === 'key' && !lookup.found && node.level === 0 && isTrace
             ? missingKeyLabel(node, lookup.key)
-            : shownKeys(node, node.level === 0 && lookup?.found ? lookup.key : undefined);
+            : shownKeys(node, lookupKeys);
           const className = [
             'tree-node',
             node.level === 0 ? 'leaf-node' : 'internal-node',
@@ -178,13 +211,13 @@ export function TreeCanvas({ snapshot, baseline, trace, diffHighlight, rowDiffs,
               <line x1="14" x2={NODE_WIDTH - 14} y1="36" y2="36" />
               <text className={nodeRowDiffs.length ? 'node-keys node-row-change' : 'node-keys'} x="15" y="61">
                 {nodeRowDiffs.length ? shownChanges(nodeRowDiffs) : keyParts.map((part, index) => (
-                  <tspan key={`${part.text}-${index}`} className={part.match ? 'node-key-match' : part.missing ? 'node-key-missing' : undefined}>{index > 0 ? '  ·  ' : ''}{part.text}</tspan>
+                  <tspan key={`${part.text}-${index}`} className={part.match ? isActiveTrace ? 'node-key-match' : 'node-key-route' : part.missing ? isActiveTrace ? 'node-key-missing' : 'node-key-missing-static' : undefined}>{index > 0 ? '  ·  ' : ''}{part.text}</tspan>
                 ))}
               </text>
               <text className="node-range" x="15" y="84">
                 {node.size.toLocaleString()} bytes
               </text>
-              <text className="node-hash" x="15" y="108">{node.hash}</text>
+              <text className={activeDiffHashes?.has(node.hash) ? 'node-hash node-hash-active' : 'node-hash'} x="15" y="108">{node.hash}</text>
             </g>
           );
         })}

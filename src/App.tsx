@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ProllyEngine, type GrowthResult, type InsertionOrderResult } from './engine';
 import { countSharedNodes, diffRows, estimateMutationSplitProbability, leafNodes, traceRange, traceSearch } from './prolly';
-import type { ProllyNode, TreeSnapshot } from './types';
+import type { LookupResult, ProllyNode, TreeSnapshot } from './types';
 import { NodeInspector } from './components/NodeInspector';
 import { TreeCanvas } from './components/TreeCanvas';
 
 type Tab = 'tree' | 'diff' | 'chunks' | 'order';
+type ControlMode = 'modify' | 'lookup';
 const NO_HIGHLIGHTS = new Set<string>();
 const NO_ROW_DIFFS: [] = [];
 
@@ -21,14 +22,24 @@ function formatOrder(order: number[]) {
   return order.length > 14 ? `${shown} → …` : shown;
 }
 
+function nextEditValue(key: number, currentValue: string) {
+  const prefix = `value-${key}-edit-`;
+  const revision = currentValue.startsWith(prefix)
+    ? Number.parseInt(currentValue.slice(prefix.length), 10) + 1
+    : 1;
+  return `${prefix}${Number.isSafeInteger(revision) ? revision : 1}`;
+}
+
 function App() {
   const engineRef = useRef<ProllyEngine | undefined>(undefined);
   const operationPendingRef = useRef(false);
+  const animationTimersRef = useRef<number[]>([]);
   const [snapshots, setSnapshots] = useState<TreeSnapshot[]>([]);
   const [viewId, setViewId] = useState<number>();
   const [compareFromId, setCompareFromId] = useState<number>();
   const [selectedHash, setSelectedHash] = useState<string>();
   const [tab, setTab] = useState<Tab>('tree');
+  const [controlMode, setControlMode] = useState<ControlMode>('modify');
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string>();
   const [keyInput, setKeyInput] = useState('49');
@@ -38,8 +49,10 @@ function App() {
   const [rangeStart, setRangeStart] = useState('1');
   const [rangeEnd, setRangeEnd] = useState('48');
   const [trace, setTrace] = useState<Set<string>>(new Set());
-  const [lookupResult, setLookupResult] = useState<{ key: number; found: boolean }>();
+  const [activeTraceHash, setActiveTraceHash] = useState<string>();
+  const [lookupResult, setLookupResult] = useState<LookupResult>();
   const [diffHighlight, setDiffHighlight] = useState<Set<string>>(new Set());
+  const [activeDiffHashes, setActiveDiffHashes] = useState<Set<string>>(new Set());
   const [lastChangeActive, setLastChangeActive] = useState(false);
   const [insertionOrderResult, setInsertionOrderResult] = useState<InsertionOrderResult>();
   const [orderSelectedHash, setOrderSelectedHash] = useState<string>();
@@ -57,6 +70,58 @@ function App() {
   const previous = viewedIndex > 0 ? snapshots[viewedIndex - 1] : undefined;
   const viewingHistorical = Boolean(current && latest && current.id !== latest.id);
 
+  const cancelAnimation = (resetActive = true) => {
+    animationTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    animationTimersRef.current = [];
+    if (resetActive) {
+      setActiveTraceHash(undefined);
+      setActiveDiffHashes(new Set());
+    }
+  };
+
+  const animateTrace = (path: string[]) => {
+    cancelAnimation();
+    if (path.length === 0) {
+      setTrace(new Set());
+      return;
+    }
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setTrace(new Set(path));
+      return;
+    }
+    setTrace(new Set([path[0]]));
+    setActiveTraceHash(path[0]);
+    animationTimersRef.current = path.slice(1).map((hash, index) => window.setTimeout(() => {
+      setTrace((visible) => new Set([...visible, hash]));
+      setActiveTraceHash(hash);
+    }, (index + 1) * 1000));
+    animationTimersRef.current.push(window.setTimeout(() => setActiveTraceHash(undefined), path.length * 1000));
+  };
+
+  const animateDiff = (hashes: Set<string>) => {
+    cancelAnimation();
+    if (!current || hashes.size === 0) {
+      setDiffHighlight(new Set());
+      return;
+    }
+    const levels = [...new Set([...hashes].map((hash) => current.nodes.get(hash)?.level).filter((level): level is number => level !== undefined))]
+      .sort((left, right) => right - left);
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      setDiffHighlight(hashes);
+      return;
+    }
+    const hashesAtLevel = (level: number) => [...hashes].filter((hash) => current.nodes.get(hash)?.level === level);
+    const firstLevel = new Set(hashesAtLevel(levels[0]));
+    setDiffHighlight(firstLevel);
+    setActiveDiffHashes(firstLevel);
+    animationTimersRef.current = levels.slice(1).map((level, index) => window.setTimeout(() => {
+      const nextLevel = new Set(hashesAtLevel(level));
+      setDiffHighlight((visible) => new Set([...visible, ...nextLevel]));
+      setActiveDiffHashes(nextLevel);
+    }, (index + 1) * 1000));
+    animationTimersRef.current.push(window.setTimeout(() => setActiveDiffHashes(new Set()), levels.length * 1000));
+  };
+
   const selectExistingInputs = (snapshot: TreeSnapshot) => {
     const first = snapshot.rows[0];
     const middle = snapshot.rows[Math.floor(snapshot.rows.length / 2)];
@@ -71,7 +136,7 @@ function App() {
       return;
     }
     setKeyInput(String(middle.key));
-    setValueInput(middle.value);
+    setValueInput(nextEditValue(middle.key, middle.value));
     setDeleteInput(String(first.key));
     setSearchInput(String(middle.key));
     setRangeStart(String(first.key));
@@ -98,11 +163,13 @@ function App() {
     });
     return () => {
       cancelled = true;
+      cancelAnimation(false);
       engineRef.current?.close();
     };
   }, []);
 
   const appendSnapshot = (snapshot: TreeSnapshot) => {
+    cancelAnimation();
     setSnapshots((existing) => [...existing, snapshot]);
     setViewId(undefined);
     setTrace(new Set());
@@ -115,7 +182,7 @@ function App() {
     selectExistingInputs(snapshot);
   };
 
-  const run = (operation: (engine: ProllyEngine) => TreeSnapshot) => {
+  const run = (operation: (engine: ProllyEngine) => TreeSnapshot, onComplete?: (snapshot: TreeSnapshot) => void) => {
     const engine = engineRef.current;
     if (!engine || operationPendingRef.current) return;
     operationPendingRef.current = true;
@@ -123,7 +190,9 @@ function App() {
     setError(undefined);
     window.setTimeout(() => {
       try {
-        appendSnapshot(operation(engine));
+        const snapshot = operation(engine);
+        appendSnapshot(snapshot);
+        onComplete?.(snapshot);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
       } finally {
@@ -196,8 +265,8 @@ function App() {
   const doSearch = () => {
     const key = Number(searchInput);
     if (!Number.isSafeInteger(key)) return;
-    setTrace(new Set(traceSearch(current.root, key)));
-    setLookupResult({ key, found: current.rows.some((row) => row.key === key) });
+    animateTrace(traceSearch(current.root, key));
+    setLookupResult({ kind: 'key', key, found: current.rows.some((row) => row.key === key) });
     setDiffHighlight(new Set());
     setLastChangeActive(false);
     setTab('tree');
@@ -207,14 +276,15 @@ function App() {
     const start = Number(rangeStart);
     const end = Number(rangeEnd);
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return;
-    setTrace(new Set(traceRange(current.root, start, end)));
-    setLookupResult(undefined);
+    animateTrace(traceRange(current.root, start, end));
+    setLookupResult({ kind: 'range', start, end });
     setDiffHighlight(new Set());
     setLastChangeActive(false);
     setTab('tree');
   };
 
   const doDiffLookup = () => {
+    cancelAnimation();
     if (lastChangeActive) {
       setDiffHighlight(new Set());
       setLastChangeActive(false);
@@ -225,7 +295,7 @@ function App() {
     const previous = snapshots[viewedIndex - 1];
     setTrace(new Set());
     setLookupResult(undefined);
-    setDiffHighlight(new Set([...current.nodes.keys()].filter((hash) => !previous.nodes.has(hash))));
+    animateDiff(new Set([...current.nodes.keys()].filter((hash) => !previous.nodes.has(hash))));
     setLastChangeActive(true);
     setSelectedHash(undefined);
     setTab('tree');
@@ -263,7 +333,11 @@ function App() {
           </svg>
           <div><strong>Prolly Tree</strong></div>
         </div>
-        <a className="runtime-pill" href="https://github.com/dolthub/doltlite" target="_blank" rel="noreferrer"><span>Powered by DoltLite WASM</span><b>{engineRef.current?.version}</b></a>
+        <a className="runtime-pill" href="https://github.com/dolthub/doltlite" target="_blank" rel="noreferrer">
+          <span>Powered by</span>
+          <img src="https://raw.githubusercontent.com/dolthub/doltlite/master/doltlite-logo.png" alt="DoltLite" />
+          <b>{engineRef.current?.version}</b>
+        </a>
       </header>
 
       <section className="database-summary">
@@ -275,8 +349,11 @@ function App() {
       </section>
 
       <section className="control-deck">
-        <div className="control-row modify-row">
-          <div className="deck-label"><span>Modify the tree</span></div>
+        <div className="control-tabs" role="tablist" aria-label="Tree controls">
+          <button className={controlMode === 'modify' ? 'control-tab active' : 'control-tab'} role="tab" aria-selected={controlMode === 'modify'} aria-controls="modify-controls" onClick={() => setControlMode('modify')}>Modify</button>
+          <button className={controlMode === 'lookup' ? 'control-tab active' : 'control-tab'} role="tab" aria-selected={controlMode === 'lookup'} aria-controls="lookup-controls" onClick={() => setControlMode('lookup')}>Lookup</button>
+        </div>
+        {controlMode === 'modify' && <div className="control-row modify-row" id="modify-controls" role="tabpanel">
           <div className="control-section put-section">
             <label>Insert or update</label>
             <div className="control-fields">
@@ -284,7 +361,15 @@ function App() {
               <input className="value-input" aria-label="Value" value={valueInput} onChange={(event) => setValueInput(event.target.value)} />
               <button className="primary-button" disabled={busy || viewingHistorical} onClick={() => {
                 const key = Number(keyInput);
-                if (Number.isSafeInteger(key)) run((engine) => engine.put(key, valueInput || `value-${key}`));
+                if (Number.isSafeInteger(key)) run(
+                  (engine) => engine.put(key, valueInput || `value-${key}`),
+                  (snapshot) => {
+                    const row = snapshot.rows.find((candidate) => candidate.key === key);
+                    if (!row) return;
+                    setKeyInput(String(key));
+                    setValueInput(nextEditValue(key, row.value));
+                  },
+                );
               }}>Put row</button>
               <button title="Randomly insert a new key or update an existing row" disabled={busy || viewingHistorical} onClick={() => run((engine) => engine.addRandom())}>Random</button>
             </div>
@@ -316,6 +401,7 @@ function App() {
                     setViewId(undefined);
                     setCompareFromId(snapshot.id);
                     setTrace(new Set());
+                    cancelAnimation();
                     setLookupResult(undefined);
                     setDiffHighlight(new Set());
                     setLastChangeActive(false);
@@ -329,22 +415,21 @@ function App() {
               }}>Reset</button>
             </div>
           </div>
-        </div>
-        <div className="control-row lookup-row">
-          <div className="deck-label"><span>Lookup</span></div>
+        </div>}
+        {controlMode === 'lookup' && <div className="control-row lookup-row" id="lookup-controls" role="tabpanel">
           <div className="control-section key-lookup-section">
             <label>Key lookup</label>
             <div className="control-fields">
-              <input aria-label="Search key" type="number" value={searchInput} onChange={(event) => { setSearchInput(event.target.value); setLookupResult(undefined); }} onKeyDown={(event) => event.key === 'Enter' && doSearch()} />
+              <input aria-label="Search key" type="number" value={searchInput} onChange={(event) => { cancelAnimation(); setTrace(new Set()); setSearchInput(event.target.value); setLookupResult(undefined); }} onKeyDown={(event) => event.key === 'Enter' && doSearch()} />
               <button disabled={busy} onClick={doSearch}>Find key</button>
             </div>
           </div>
           <div className="control-section range-lookup-section">
             <label>Range lookup</label>
             <div className="control-fields">
-              <input aria-label="Range start" type="number" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} />
+              <input aria-label="Range start" type="number" value={rangeStart} onChange={(event) => { cancelAnimation(); setTrace(new Set()); setRangeStart(event.target.value); }} />
               <span className="range-arrow">to</span>
-              <input aria-label="Range end" type="number" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && doRangeSearch()} />
+              <input aria-label="Range end" type="number" value={rangeEnd} onChange={(event) => { cancelAnimation(); setTrace(new Set()); setRangeEnd(event.target.value); }} onKeyDown={(event) => event.key === 'Enter' && doRangeSearch()} />
               <button disabled={busy} onClick={doRangeSearch}>Find range</button>
             </div>
           </div>
@@ -354,13 +439,13 @@ function App() {
               <button className={lastChangeActive ? 'diff-lookup-button active' : 'diff-lookup-button'} aria-pressed={lastChangeActive} disabled={busy || viewedIndex <= 0} onClick={doDiffLookup}>{lastChangeActive ? 'Clear last change' : 'Highlight last change'}</button>
             </div>
           </div>
-        </div>
+        </div>}
       </section>
 
       {viewingHistorical && (
         <div className="history-view-banner">
           <span>Viewing version {String(viewedIndex + 1).padStart(2, '0')} of {String(snapshots.length).padStart(2, '0')}. Editing is paused for historical states.</span>
-          <button onClick={() => { setViewId(undefined); setTrace(new Set()); setLookupResult(undefined); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }}>Return to latest</button>
+          <button onClick={() => { cancelAnimation(); setViewId(undefined); setTrace(new Set()); setLookupResult(undefined); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }}>Return to latest</button>
         </div>
       )}
 
@@ -399,7 +484,7 @@ function App() {
               )}
             </div>
             <div className={selectedNode ? 'tree-with-inspector open' : 'tree-with-inspector'}>
-              <TreeCanvas snapshot={current} baseline={previous} trace={trace} diffHighlight={diffHighlight} rowDiffs={highlightedRowDiffs} lookup={lookupResult} selectedHash={selectedHash} onSelect={setSelectedHash} />
+              <TreeCanvas snapshot={current} baseline={previous} trace={trace} activeTraceHash={activeTraceHash} diffHighlight={diffHighlight} activeDiffHashes={activeDiffHashes} rowDiffs={highlightedRowDiffs} lookup={lookupResult} selectedHash={selectedHash} onSelect={setSelectedHash} />
               <NodeInspector node={selectedNode} rows={current.rows} onClose={() => setSelectedHash(undefined)} />
             </div>
             <div className="tree-storage-note">
@@ -528,7 +613,7 @@ function App() {
             {[...snapshots].reverse().map((snapshot, reverseIndex) => {
               const index = snapshots.length - reverseIndex - 1;
               return (
-                <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { setViewId(snapshot.id); setTrace(new Set()); setLookupResult(undefined); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }} disabled={snapshot.id === current.id}>
+                <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { cancelAnimation(); setViewId(snapshot.id); setTrace(new Set()); setLookupResult(undefined); setDiffHighlight(new Set()); setLastChangeActive(false); setSelectedHash(undefined); }} disabled={snapshot.id === current.id}>
                   <span>Version {String(index + 1).padStart(2, '0')}{index === snapshots.length - 1 && <em>latest</em>}</span>
                   <b>{snapshot.label}</b>
                   <code>{snapshot.rootHash}</code>
@@ -540,7 +625,11 @@ function App() {
         </aside>
       </div>
 
-      <footer><span>Runs entirely in your browser. No database server, no simulated tree.</span><span>DoltLite format v12 · {current.databaseBytes.toLocaleString()} B exported · {current.chunksInStore} stored chunks</span></footer>
+      <footer>
+        <span>Runs entirely in your browser. No database server, no simulated tree.</span>
+        <a href="https://www.dolthub.com/docs/architecture/storage-engine/prolly-tree/" target="_blank" rel="noreferrer">Read more about Prolly Trees</a>
+        <span>DoltLite format v12 · {current.databaseBytes.toLocaleString()} B exported · {current.chunksInStore} stored chunks</span>
+      </footer>
     </div>
   );
 }

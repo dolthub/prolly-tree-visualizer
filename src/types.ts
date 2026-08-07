@@ -42,3 +42,7 @@ export interface RowDiff {
   after?: string;
   kind: 'added' | 'modified' | 'deleted';
 }
+
+export type LookupResult =
+  | { kind: 'key'; key: number; found: boolean }
+  | { kind: 'range'; start: number; end: number };

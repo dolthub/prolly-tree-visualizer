@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { missingKeyLabel, shownKeys } from './TreeCanvas';
+import { missingKeyLabel, rangeKeysForNode, routeKeyForLookup, shownKeys } from './TreeCanvas';
 import type { ProllyNode } from '../types';
 
 function leaf(keys: number[]): ProllyNode {
@@ -17,7 +17,7 @@ function leaf(keys: number[]): ProllyNode {
 
 describe('tree key labels', () => {
   it('keeps a looked-up key visible inside a compressed leaf', () => {
-    expect(shownKeys(leaf([1, 2, 3, 4, 5, 6, 7, 8, 9]), 6)).toEqual([
+    expect(shownKeys(leaf([1, 2, 3, 4, 5, 6, 7, 8, 9]), [6])).toEqual([
       { text: '1', match: false },
       { text: '…', match: false },
       { text: '6', match: true },
@@ -32,5 +32,14 @@ describe('tree key labels', () => {
       { text: 'key 6 not found', match: false, missing: true },
       { text: '8', match: false },
     ]);
+  });
+
+  it('selects the first delimiter at or above the lookup key', () => {
+    expect(routeKeyForLookup(leaf([10, 20, 30]), 17)).toBe(20);
+    expect(routeKeyForLookup(leaf([10, 20, 30]), 40)).toBe(30);
+  });
+
+  it('selects the first and last returned keys in a leaf range', () => {
+    expect(rangeKeysForNode(leaf([1, 4, 8, 12, 16]), 3, 13)).toEqual([4, 12]);
   });
 });
