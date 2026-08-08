@@ -215,6 +215,9 @@ button.mutation-stage:disabled { cursor: default; }
 .row-diff { display: grid; grid-template-columns: 32px 70px 1fr 24px 1fr 80px; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--line); align-items: center; font-size: 11px; }
 .row-diff:last-child { border-bottom: 0; }
 .row-diff code { font-weight: 600; }
+.diff-value { display: flex; min-width: 0; align-items: center; gap: 8px; font-family: var(--mono); }
+.diff-value > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-value small { flex: 0 0 auto; border-radius: 999px; background: #e6e9ef; padding: 2px 6px; color: var(--muted); font: 500 11px var(--mono); white-space: nowrap; }
 .row-diff em { font-style: normal; text-align: right; color: var(--muted); font-size: 11px; text-transform: uppercase; }
 .row-diff.added { background: #f1faf6; }
 .row-diff.deleted { background: #fff4ef; }

@@ -7,6 +7,7 @@ import { buildDiffTraversal, type DiffTraversalFrame } from './diffTraversal';
 import type { LookupResult, ProllyNode, TreeSnapshot } from './types';
 import { InfoTip } from './components/InfoTip';
 import { DiffPlaybackPanel } from './components/DiffPlaybackPanel';
+import { DiffValue } from './components/DiffValue';
 import { LookupDetailsPanel, type LookupDetails } from './components/LookupDetailsPanel';
 import { MutationCostPanel } from './components/MutationCostPanel';
 import { NodeInspector } from './components/NodeInspector';
@@ -573,9 +574,9 @@ function App() {
             {([
               ['tree', 'Tree'],
               ['diff', `Fast diff${metrics.diff.rowDiffs.length ? ` · ${metrics.diff.rowDiffs.length}` : ''}`],
-              ['chunks', `Chunk boundaries · ${metrics.leaves.length}`],
               ['storage', 'Storage'],
               ['order', 'History independence'],
+              ['chunks', `Chunk boundaries · ${metrics.leaves.length}`],
             ] as [Tab, string][]).map(([id, label]) => (
               <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}>{label}</button>
             ))}
@@ -649,7 +650,7 @@ function App() {
               {metrics.diff.rowDiffs.length === 0 ? <div className="empty-state">These snapshots contain the same rows.</div> : metrics.diff.rowDiffs.map((diff) => (
                 <div className={`row-diff ${diff.kind}`} key={diff.key}>
                   <span className="diff-sign">{diff.kind === 'added' ? '+' : diff.kind === 'deleted' ? '−' : '±'}</span>
-                  <code>{diff.key}</code><span>{diff.before ?? '∅'}</span><span>→</span><span>{diff.after ?? '∅'}</span><em>{diff.kind}</em>
+                  <code>{diff.key}</code><DiffValue value={diff.before} /><span>→</span><DiffValue value={diff.after} /><em>{diff.kind}</em>
                 </div>
               ))}
             </div>

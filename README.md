@@ -1,5 +1,7 @@
 # Prolly Tree
 
+![Prolly Tree visualizer showing a content-addressed tree, version history, and mutation cost](docs/prolly-tree-visualizer.png)
+
 An interactive browser visualizer for the real prolly trees produced by
 [DoltLite](https://github.com/dolthub/doltlite). The interaction model is
 inspired by [btree.app](https://btree.app/), but every tree mutation is SQL
