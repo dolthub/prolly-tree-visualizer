@@ -1,26 +1,38 @@
-import sqlite3InitModule from '@dolthub/doltlite-wasm';
-import doltliteWasmUrl from '@dolthub/doltlite-wasm/sqlite3.wasm?url';
+import {
+  loadProllyWasm,
+  type ProllyWasmModule,
+  type WasmEntryRecord,
+  type WasmProllyEngineInstance,
+  type WasmTree,
+  type WasmTreeDebugViewRecord,
+} from '@trail/prolly-wasm';
 import { bootstrapKeys, deterministicShuffle } from './bootstrap';
-import { parseChunkStore } from './chunkStore';
-import { exportDatabase } from './exportDatabase';
-import { findTableRoot, leafNodes } from './prolly';
+import { buildTreeFromDebug, leafNodes, toHex } from './prolly';
 import type { RowValue, TreeSnapshot } from './types';
 
-type Sqlite3 = Awaited<ReturnType<typeof sqlite3InitModule>>;
-type Db = Sqlite3['oo1']['DB'] extends new (...args: never[]) => infer T ? T : never;
-type ModuleCache = typeof globalThis & { prollyTreeSqlite3?: Promise<Sqlite3> };
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 
-function loadSqlite3() {
-  const cache = globalThis as ModuleCache;
-  if (!cache.prollyTreeSqlite3) {
-    cache.prollyTreeSqlite3 = sqlite3InitModule({
-      locateFile: (filename: string) => filename === 'sqlite3.wasm' ? doltliteWasmUrl : filename,
-    }).catch((cause) => {
-      delete cache.prollyTreeSqlite3;
-      throw cause;
-    });
-  }
-  return cache.prollyTreeSqlite3;
+function decodeI64Key(bytes: Uint8Array) {
+  let encoded = 0n;
+  for (const byte of bytes) encoded = (encoded << 8n) | BigInt(byte);
+  const decoded = BigInt.asIntN(64, encoded ^ (1n << 63n));
+  const number = Number(decoded);
+  if (!Number.isSafeInteger(number)) throw new Error(`integer key ${decoded} is outside JavaScript's safe range`);
+  return number;
+}
+
+function rowsFromEntries(entries: WasmEntryRecord[]): RowValue[] {
+  return entries.map((entry) => ({
+    key: decodeI64Key(entry.key),
+    value: textDecoder.decode(entry.value),
+  }));
+}
+
+function sumSizes(sizes: Map<string, number>) {
+  let total = 0;
+  for (const size of sizes.values()) total += size;
+  return total;
 }
 
 export interface GrowthResult {
@@ -61,104 +73,121 @@ export interface InsertionOrderResult {
 }
 
 export class ProllyEngine {
-  private readonly sqlite3: Sqlite3;
-  private db: Db;
+  private readonly wasm: ProllyWasmModule;
+  private runtime: WasmProllyEngineInstance;
+  private tree: WasmTree;
   private snapshotId = 0;
-  readonly version: string;
+  private storedNodeSizes = new Map<string, number>();
+  readonly version = '@trail/prolly-wasm 0.1.0';
 
-  private constructor(sqlite3: Sqlite3) {
-    this.sqlite3 = sqlite3;
-    this.db = this.openDb();
-    this.version = String(this.db.selectValue('SELECT dolt_version()'));
+  private constructor(wasm: ProllyWasmModule) {
+    this.wasm = wasm;
+    this.runtime = wasm.WasmProllyEngine.memory();
+    this.tree = this.runtime.create();
   }
 
   static async create() {
-    const sqlite3 = await loadSqlite3();
-    const engine = new ProllyEngine(sqlite3);
-    engine.createSchema();
-    return engine;
+    return new ProllyEngine(await loadProllyWasm());
   }
 
-  private openDb() {
-    return new this.sqlite3.oo1.DB(`/prolly-tree-lab-${Date.now()}-${Math.random()}.db`, 'c') as Db;
+  private key(key: number) {
+    if (!Number.isSafeInteger(key)) throw new Error('keys must be safe integers');
+    return this.wasm.i64Key(String(key));
   }
 
-  private createSchema(db = this.db) {
-    db.exec('CREATE TABLE prolly_rows(id INTEGER PRIMARY KEY, value TEXT NOT NULL)');
+  private entry(row: RowValue) {
+    return { key: this.key(row.key), value: textEncoder.encode(row.value) };
   }
 
-  private rows(db = this.db): RowValue[] {
-    return db.selectObjects('SELECT id, value FROM prolly_rows ORDER BY id').map((row) => ({
-      key: Number(row.id),
-      value: String(row.value),
-    }));
+  private rows(runtime = this.runtime, tree = this.tree): RowValue[] {
+    return rowsFromEntries(runtime.range(tree, new Uint8Array()));
   }
 
-  seed(count = 240) {
-    const keys = bootstrapKeys(count);
-    const values = keys.map((key) => `(${key}, 'value-${key}')`).join(',');
-    this.db.exec(`INSERT INTO prolly_rows(id, value) VALUES ${values}`);
-    return this.capture(`Built ${keys.length} sparse rows`);
+  private replaceTree(next: WasmTree) {
+    this.tree.free();
+    this.tree = next;
   }
 
-  capture(label: string): TreeSnapshot {
-    return this.captureDb(this.db, label);
+  private replaceRuntime(runtime: WasmProllyEngineInstance, tree: WasmTree) {
+    this.tree.free();
+    this.runtime.free();
+    this.runtime = runtime;
+    this.tree = tree;
   }
 
-  private captureDb(db: Db, label: string): TreeSnapshot {
-    const rows = this.rows(db);
-    const catalogHash = String(db.selectValue('SELECT dolt_hashof_catalog()'));
-    const bytes = exportDatabase(this.sqlite3.wasm, db.pointer);
-    const image = parseChunkStore(bytes);
-    const { root, nodes } = findTableRoot(image.chunks, rows.map((row) => row.key), catalogHash);
-    const rootHash = root.hash;
+  private snapshotFrom(
+    runtime: WasmProllyEngineInstance,
+    tree: WasmTree,
+    rows: RowValue[],
+    label: string,
+    id: number,
+    storedNodeSizes?: Map<string, number>,
+  ): TreeSnapshot {
+    const debug = runtime.debugTree(tree) as WasmTreeDebugViewRecord;
+    const { root, nodes } = buildTreeFromDebug(debug, rows);
+    const rootBytes = tree.root as Uint8Array | number[] | null;
+    if (!rootBytes) throw new Error('the prolly tree is empty');
+    const rootHash = toHex(rootBytes);
+    if (root.hash !== rootHash) throw new Error('debug tree root does not match the engine root');
+
+    const physicalSizes = storedNodeSizes ?? new Map<string, number>();
+    for (const [hash, node] of nodes) physicalSizes.set(hash, node.size);
     return {
-      id: this.snapshotId++,
+      id,
       label,
       rootHash,
       root,
       rows,
       nodes,
-      chunksInStore: image.chunks.size,
-      databaseBytes: bytes.length,
+      chunksInStore: physicalSizes.size,
+      databaseBytes: sumSizes(physicalSizes),
       timestamp: Date.now(),
     };
   }
 
+  seed(count = 240) {
+    const rows = bootstrapKeys(count).map((key) => ({ key, value: `value-${key}` }));
+    this.replaceTree(this.runtime.buildFromSortedEntries(rows.map((row) => this.entry(row))));
+    return this.capture(`Built ${rows.length} sparse rows`);
+  }
+
+  capture(label: string): TreeSnapshot {
+    return this.snapshotFrom(
+      this.runtime,
+      this.tree,
+      this.rows(),
+      label,
+      this.snapshotId++,
+      this.storedNodeSizes,
+    );
+  }
+
   put(key: number, value: string) {
-    const exists = Number(this.db.selectValue(`SELECT EXISTS(SELECT 1 FROM prolly_rows WHERE id = ${Math.trunc(key)})`));
-    this.db.exec({
-      sql: 'INSERT INTO prolly_rows(id, value) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET value=excluded.value',
-      bind: [key, value],
-    });
+    const encodedKey = this.key(key);
+    const exists = this.runtime.get(this.tree, encodedKey) !== null;
+    this.replaceTree(this.runtime.put(this.tree, encodedKey, textEncoder.encode(value)));
     return this.capture(`${exists ? 'Updated' : 'Inserted'} key ${key}`);
   }
 
   remove(key: number) {
-    this.db.exec({ sql: 'DELETE FROM prolly_rows WHERE id = ?', bind: [key] });
+    this.replaceTree(this.runtime.delete(this.tree, this.key(key)));
     return this.capture(`Deleted key ${key}`);
   }
 
   addSequential(count: number) {
-    const first = Number(this.db.selectValue('SELECT COALESCE(MAX(id), 0) + 1 FROM prolly_rows'));
+    const rows = this.rows();
+    const first = (rows.at(-1)?.key ?? 0) + 1;
     this.insertSequential(first, count, 'value');
     return this.capture(`Appended ${count} sequential rows`);
   }
 
   private insertSequential(first: number, count: number, prefix: string) {
     const amount = Math.max(1, Math.trunc(count));
-    const last = first + amount - 1;
-    this.db.exec(`WITH RECURSIVE seq(key) AS (
-      VALUES(${first}) UNION ALL SELECT key + 1 FROM seq WHERE key < ${last}
-    ) INSERT INTO prolly_rows SELECT key, printf('${prefix}-%d', key) FROM seq`);
-  }
-
-  private insertLevelRows(first: number, count: number) {
-    const amount = Math.max(1, Math.trunc(count));
-    const last = first + amount - 1;
-    this.db.exec(`WITH RECURSIVE seq(key) AS (
-      VALUES(${first}) UNION ALL SELECT key + 1 FROM seq WHERE key < ${last}
-    ) INSERT INTO prolly_rows SELECT key, printf('level-%d-%.*c', key, 2048, 'x') FROM seq`);
+    const mutations = Array.from({ length: amount }, (_, index) => {
+      const key = first + index;
+      return { kind: 'upsert', key: this.key(key), value: textEncoder.encode(`${prefix}-${key}`) };
+    });
+    this.replaceTree(this.runtime.appendBatch(this.tree, mutations));
   }
 
   addRandom() {
@@ -175,7 +204,7 @@ export class ProllyEngine {
   growUntilSplit(limit = 512, batchSize = 16): GrowthResult {
     const before = this.capture('Before split search');
     const leafCount = leafNodes(before.root).length;
-    let next = Number(this.db.selectValue('SELECT COALESCE(MAX(id), 0) + 1 FROM prolly_rows'));
+    let next = (before.rows.at(-1)?.key ?? 0) + 1;
     let candidate = before;
     for (let added = 0; added < limit;) {
       const amount = Math.min(batchSize, limit - added);
@@ -193,13 +222,13 @@ export class ProllyEngine {
     const before = this.capture('Before level growth');
     const rootLevel = before.root.level;
     if (rootLevel >= 2) throw new Error('Four-level trees exceed the full-node browser rendering limit');
-    const limit = rootLevel === 0 ? 512 : 2_000;
-    const batchSize = rootLevel === 0 ? 16 : 500;
-    let next = Number(this.db.selectValue('SELECT COALESCE(MAX(id), 0) + 1 FROM prolly_rows'));
+    const limit = rootLevel === 0 ? 2_048 : 48_000;
+    const batchSize = rootLevel === 0 ? 256 : 2_000;
+    let next = (before.rows.at(-1)?.key ?? 0) + 1;
     let candidate = before;
     for (let added = 0; added < limit;) {
       const amount = Math.min(batchSize, limit - added);
-      this.insertLevelRows(next, amount);
+      this.insertSequential(next, amount, 'level');
       added += amount;
       next += amount;
       candidate = this.capture(`Reached level ${rootLevel + 1} after appending ${added} rows`);
@@ -210,100 +239,87 @@ export class ProllyEngine {
   }
 
   garbageCollect(): GarbageCollectionResult {
-    const beforeBytes = exportDatabase(this.sqlite3.wasm, this.db.pointer);
-    const beforeImage = parseChunkStore(beforeBytes);
-    const beforeCatalogHash = String(this.db.selectValue('SELECT dolt_hashof_catalog()'));
+    const beforeChunks = this.storedNodeSizes.size;
+    const beforeBytes = sumSizes(this.storedNodeSizes);
     const rows = this.rows();
-    const beforeRoot = findTableRoot(beforeImage.chunks, rows.map((row) => row.key), beforeCatalogHash).root.hash;
-    const replacement = this.openDb();
-    try {
-      this.createSchema(replacement);
-      replacement.exec('BEGIN');
-      try {
-        for (const row of rows) {
-          replacement.exec({ sql: 'INSERT INTO prolly_rows(id, value) VALUES (?, ?)', bind: [row.key, row.value] });
-        }
-        replacement.exec('COMMIT');
-      } catch (cause) {
-        replacement.exec('ROLLBACK');
-        throw cause;
-      }
-      const head = this.captureDb(replacement, 'Garbage collected');
-      if (head.rootHash !== beforeRoot) throw new Error('HEAD root changed during garbage collection');
-      const previous = this.db;
-      this.db = replacement;
-      previous.close();
-      return {
-        head,
-        message: `${Math.max(0, beforeImage.chunks.size - head.chunksInStore)} chunks removed, ${head.chunksInStore} chunks kept`,
-        beforeChunks: beforeImage.chunks.size,
-        afterChunks: head.chunksInStore,
-        beforeBytes: beforeBytes.length,
-        afterBytes: head.databaseBytes,
-      };
-    } catch (cause) {
-      replacement.close();
-      throw cause;
+    const previousRoot = toHex(this.tree.root as Uint8Array | number[]);
+    const replacementRuntime = this.wasm.WasmProllyEngine.memory();
+    const empty = replacementRuntime.create();
+    const replacementTree = replacementRuntime.buildFromSortedEntries(rows.map((row) => this.entry(row)));
+    empty.free();
+    const replacementRoot = toHex(replacementTree.root as Uint8Array | number[]);
+    if (replacementRoot !== previousRoot) {
+      replacementTree.free();
+      replacementRuntime.free();
+      throw new Error('HEAD root changed during garbage collection');
     }
+
+    this.replaceRuntime(replacementRuntime, replacementTree);
+    this.storedNodeSizes = new Map();
+    const head = this.capture('Garbage collected');
+    return {
+      head,
+      message: `${Math.max(0, beforeChunks - head.chunksInStore)} chunks removed, ${head.chunksInStore} chunks kept`,
+      beforeChunks,
+      afterChunks: head.chunksInStore,
+      beforeBytes,
+      afterBytes: head.databaseBytes,
+    };
   }
 
   reset(count = 240) {
-    this.db.close();
-    this.db = this.openDb();
+    const runtime = this.wasm.WasmProllyEngine.memory();
+    const tree = runtime.create();
+    this.replaceRuntime(runtime, tree);
     this.snapshotId = 0;
-    this.createSchema();
+    this.storedNodeSizes = new Map();
     return this.seed(count);
   }
 
   compareInsertionOrder(snapshot: TreeSnapshot): InsertionOrderResult {
     const rows = snapshot.rows;
     const build = (ordered: RowValue[], draftKeys = new Set<number>()): InsertionOrderBuild => {
-      const db = this.openDb();
+      const runtime = this.wasm.WasmProllyEngine.memory();
+      let tree = runtime.create();
+      const pending: RowValue[] = [];
+      const updates: number[] = [];
       try {
-        db.exec('CREATE TABLE prolly_rows(id INTEGER PRIMARY KEY, value TEXT NOT NULL)');
-        const pending: RowValue[] = [];
-        const updates: number[] = [];
         for (let index = 0; index < ordered.length; index += 1) {
           const row = ordered[index];
           const draft = draftKeys.has(row.key);
-          db.exec({ sql: 'INSERT INTO prolly_rows VALUES (?, ?)', bind: [row.key, draft ? `draft-${row.key}` : row.value] });
+          const next = runtime.put(tree, this.key(row.key), textEncoder.encode(draft ? `draft-${row.key}` : row.value));
+          tree.free();
+          tree = next;
           if (draft) pending.push(row);
           if (index % 5 === 4 && pending.length > 0) {
             const update = pending.shift()!;
-            db.exec({ sql: 'UPDATE prolly_rows SET value = ? WHERE id = ?', bind: [update.value, update.key] });
+            const updated = runtime.put(tree, this.key(update.key), textEncoder.encode(update.value));
+            tree.free();
+            tree = updated;
             updates.push(update.key);
           }
         }
         for (const update of pending) {
-          db.exec({ sql: 'UPDATE prolly_rows SET value = ? WHERE id = ?', bind: [update.value, update.key] });
+          const updated = runtime.put(tree, this.key(update.key), textEncoder.encode(update.value));
+          tree.free();
+          tree = updated;
           updates.push(update.key);
         }
-        const catalogHash = String(db.selectValue('SELECT dolt_hashof_catalog()'));
-        const bytes = exportDatabase(this.sqlite3.wasm, db.pointer);
-        const image = parseChunkStore(bytes);
-        const { root, nodes } = findTableRoot(image.chunks, rows.map((row) => row.key), catalogHash);
-        const snapshot: TreeSnapshot = {
-          id: -1,
-          label: 'History independence build',
-          rootHash: root.hash,
-          root,
-          rows,
-          nodes,
-          chunksInStore: image.chunks.size,
-          databaseBytes: bytes.length,
-          timestamp: Date.now(),
-        };
+        const finalRows = rowsFromEntries(runtime.range(tree, new Uint8Array()));
+        const rebuiltSnapshot = this.snapshotFrom(runtime, tree, finalRows, 'History independence build', -1);
         return {
           order: ordered.map((row) => row.key),
           updates,
-          rootHash: root.hash,
-          nodeHashes: [...nodes.keys()].sort(),
-          snapshot,
+          rootHash: rebuiltSnapshot.rootHash,
+          nodeHashes: [...rebuiltSnapshot.nodes.keys()].sort(),
+          snapshot: rebuiltSnapshot,
         };
       } finally {
-        db.close();
+        tree.free();
+        runtime.free();
       }
     };
+
     const current: InsertionOrderSource = {
       rootHash: snapshot.rootHash,
       nodeHashes: [...snapshot.nodes.keys()].sort(),
@@ -323,6 +339,7 @@ export class ProllyEngine {
   }
 
   close() {
-    this.db.close();
+    this.tree.free();
+    this.runtime.free();
   }
 }

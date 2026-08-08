@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { buildTree, diffRows, estimateMutationSplitProbability, findTableRoot, groupRowDiffsByLeaf, parseProllyNode, traceRange, traceSearch } from './prolly';
-
-function u16(value: number) {
-  return [value & 0xff, (value >>> 8) & 0xff];
-}
-
-function u32(value: number) {
-  return [value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff];
-}
+import type { WasmTreeDebugViewRecord } from '@trail/prolly-wasm';
+import {
+  buildTreeFromDebug,
+  diffRows,
+  estimateMutationSplitProbability,
+  groupRowDiffsByLeaf,
+  traceRange,
+  traceSearch,
+} from './prolly';
 
 function intKey(value: number) {
   let encoded = BigInt.asUintN(64, BigInt(value)) ^ (1n << 63n);
@@ -19,93 +19,78 @@ function intKey(value: number) {
   return bytes;
 }
 
-function node(level: number, keys: number[], values: Uint8Array[]) {
-  const keyData = keys.flatMap((key) => [...intKey(key)]);
-  const valueData = values.flatMap((value) => [...value]);
-  const keyOffsets = keys.flatMap((_, index) => u32(index * 8)).concat(u32(keys.length * 8));
-  let valueOffset = 0;
-  const valueOffsets: number[] = [];
-  for (const value of values) {
-    valueOffsets.push(...u32(valueOffset));
-    valueOffset += value.length;
-  }
-  valueOffsets.push(...u32(valueOffset));
-  return new Uint8Array([
-    0x44, 0x4f, 0x4e, 0x50,
-    level,
-    ...u16(keys.length),
-    0x01,
-    ...keyOffsets,
-    ...valueOffsets,
-    ...keyData,
-    ...valueData,
-  ]);
+function cid(byte: number) {
+  return Uint8Array.from({ length: 32 }, () => byte);
 }
 
-function bytesFromHex(hex: string) {
-  return new Uint8Array(hex.match(/../g)!.map((byte) => Number.parseInt(byte, 16)));
+function debugTree(): WasmTreeDebugViewRecord {
+  return {
+    levels: [
+      {
+        level: 1,
+        nodes: [{
+          cid: cid(3),
+          leaf: false,
+          level: 1,
+          entry_count: 2,
+          max_entries: 1_048_576,
+          fill_factor: 2 / 1_048_576,
+          encoded_bytes: 100,
+          first_key: intKey(1),
+          last_key: intKey(7),
+        }],
+      },
+      {
+        level: 0,
+        nodes: [
+          {
+            cid: cid(1),
+            leaf: true,
+            level: 0,
+            entry_count: 2,
+            max_entries: 1_048_576,
+            fill_factor: 2 / 1_048_576,
+            encoded_bytes: 80,
+            first_key: intKey(1),
+            last_key: intKey(3),
+          },
+          {
+            cid: cid(2),
+            leaf: true,
+            level: 0,
+            entry_count: 2,
+            max_entries: 1_048_576,
+            fill_factor: 2 / 1_048_576,
+            encoded_bytes: 80,
+            first_key: intKey(7),
+            last_key: intKey(9),
+          },
+        ],
+      },
+    ],
+  };
 }
 
-function catalog(tableName: string, rootHash: string) {
-  const encoder = new TextEncoder();
-  const type = encoder.encode('table');
-  const name = encoder.encode(tableName);
-  return new Uint8Array([
-    0x46,
-    ...u32(1),
-    ...u32(0),
-    ...u32(0),
-    ...u32(2),
-    0,
-    ...bytesFromHex(rootHash),
-    ...new Uint8Array(20),
-    ...u16(type.length),
-    ...u16(name.length),
-    ...u16(name.length),
-    ...type,
-    ...name,
-    ...name,
-  ]);
-}
+const rows = [1, 3, 7, 9].map((key) => ({ key, value: `value-${key}` }));
 
-describe('prolly node decoder', () => {
-  it('decodes signed integer leaf keys and values', () => {
-    const parsed = parseProllyNode('a'.repeat(40), node(0, [-2, 4], [new Uint8Array([1]), new Uint8Array([2, 3])]));
-    expect(parsed.level).toBe(0);
-    expect(parsed.entries.map((entry) => entry.key)).toEqual([-2, 4]);
-    expect(parsed.entries.map((entry) => entry.valueHex)).toEqual(['01', '0203']);
-  });
+describe('prolly WASM debug adapter', () => {
+  it('builds child links and lower-bound lookup paths', () => {
+    const tree = buildTreeFromDebug(debugTree(), rows);
+    const rootHash = '03'.repeat(32);
+    const leftHash = '01'.repeat(32);
+    const rightHash = '02'.repeat(32);
 
-  it('builds child links and traces the delimiter path', () => {
-    const leftHash = '1'.repeat(40);
-    const rightHash = '2'.repeat(40);
-    const rootHash = '3'.repeat(40);
-    const chunks = new Map([
-      [leftHash, node(0, [1, 3], [new Uint8Array([1]), new Uint8Array([3])])],
-      [rightHash, node(0, [7, 9], [new Uint8Array([7]), new Uint8Array([9])])],
-      [rootHash, node(1, [3, 9], [Uint8Array.from({ length: 20 }, () => 0x11), Uint8Array.from({ length: 20 }, () => 0x22)])],
-    ]);
-    const tree = buildTree(rootHash, chunks);
+    expect(tree.root.hash).toBe(rootHash);
     expect(tree.root.children).toHaveLength(2);
+    expect(tree.root.entries.map((entry) => entry.key)).toEqual([1, 7]);
+    expect(traceSearch(tree.root, 2)).toEqual([rootHash, leftHash]);
     expect(traceSearch(tree.root, 8)).toEqual([rootHash, rightHash]);
     expect(traceRange(tree.root, 2, 8)).toEqual([rootHash, leftHash, rightHash]);
     expect(traceRange(tree.root, 7, 8)).toEqual([rootHash, rightHash]);
-    expect(findTableRoot(chunks, [1, 3, 7, 9]).root.hash).toBe(rootHash);
   });
 
-  it('uses the current catalog root when old roots have the same keys', () => {
-    const oldRootHash = '4'.repeat(40);
-    const currentRootHash = '5'.repeat(40);
-    const catalogHash = '6'.repeat(40);
-    const chunks = new Map([
-      [oldRootHash, node(0, [1], [new Uint8Array([1])])],
-      [currentRootHash, node(0, [1], [new Uint8Array([2])])],
-      [catalogHash, catalog('prolly_rows', currentRootHash)],
-    ]);
-
-    const tree = findTableRoot(chunks, [1], catalogHash);
-    expect(tree.root.hash).toBe(currentRootHash);
-    expect(tree.root.entries[0].valueHex).toBe('02');
+  it('rejects debug metadata that does not match the returned rows', () => {
+    expect(() => buildTreeFromDebug(debugTree(), rows.slice(0, 3))).toThrow('reports 2 entries');
   });
 });
 
@@ -122,14 +107,7 @@ describe('row diff', () => {
   });
 
   it('maps changed rows to their current leaf', () => {
-    const leftHash = '1'.repeat(40);
-    const rightHash = '2'.repeat(40);
-    const rootHash = '3'.repeat(40);
-    const tree = buildTree(rootHash, new Map([
-      [leftHash, node(0, [1, 3], [new Uint8Array([1]), new Uint8Array([3])])],
-      [rightHash, node(0, [7, 9], [new Uint8Array([7]), new Uint8Array([9])])],
-      [rootHash, node(1, [3, 9], [Uint8Array.from({ length: 20 }, () => 0x11), Uint8Array.from({ length: 20 }, () => 0x22)])],
-    ]));
+    const tree = buildTreeFromDebug(debugTree(), rows);
     const diffs = [
       { key: 2, after: 'added', kind: 'added' as const },
       { key: 7, before: 'old', after: 'new', kind: 'modified' as const },
@@ -137,22 +115,17 @@ describe('row diff', () => {
     ];
 
     expect(groupRowDiffsByLeaf(tree.root, diffs)).toEqual(new Map([
-      [leftHash, [diffs[0]]],
-      [rightHash, [diffs[1], diffs[2]]],
+      ['01'.repeat(32), [diffs[0]]],
+      ['02'.repeat(32), [diffs[1], diffs[2]]],
     ]));
   });
 });
 
 describe('split probability', () => {
-  it('uses the DoltLite chunk bounds and Weibull boundary distribution', () => {
-    const small = parseProllyNode('4'.repeat(40), node(0, [1, 2], [new Uint8Array([1]), new Uint8Array([2])]));
-    const keys = Array.from({ length: 160 }, (_, index) => index * 2 + 1);
-    const values = keys.map(() => new Uint8Array(12));
-    const developed = parseProllyNode('5'.repeat(40), node(0, keys, values));
-    const probability = estimateMutationSplitProbability(developed);
-
-    expect(estimateMutationSplitProbability(small)).toBe(0);
-    expect(probability).toBeGreaterThan(0);
-    expect(probability).toBeLessThan(1);
+  it('uses prolly-map default hash-threshold chunking', () => {
+    const tree = buildTreeFromDebug(debugTree(), rows);
+    expect(estimateMutationSplitProbability(tree.root.children[0])).toBe(0);
+    tree.root.children[0].entries.push({ key: 4, keyHex: '', valueHex: '' });
+    expect(estimateMutationSplitProbability(tree.root.children[0])).toBe(1 / 128);
   });
 });

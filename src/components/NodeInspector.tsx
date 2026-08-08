@@ -29,7 +29,7 @@ export function NodeInspector({ node, rows, onClose }: NodeInspectorProps) {
       </dl>
       <div className="entry-list">
         <div className="entry-list-head">
-          <span>{node.level === 0 ? 'decoded key → SQL value' : 'delimiter → child address'}</span>
+          <span>{node.level === 0 ? 'decoded key → value' : 'lower bound → child address'}</span>
         </div>
         {visibleEntries.map((entry, index) => (
           <div className="entry-row" key={`${entry.keyHex}-${index}`}>

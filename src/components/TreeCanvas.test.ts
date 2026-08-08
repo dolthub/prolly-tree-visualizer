@@ -44,8 +44,8 @@ describe('tree key labels', () => {
     ]);
   });
 
-  it('selects the first delimiter at or above the lookup key', () => {
-    expect(routeKeyForLookup(leaf([10, 20, 30]), 17)).toBe(20);
+  it('selects the last lower-bound delimiter at or below the lookup key', () => {
+    expect(routeKeyForLookup(leaf([10, 20, 30]), 17)).toBe(10);
     expect(routeKeyForLookup(leaf([10, 20, 30]), 40)).toBe(30);
   });
 

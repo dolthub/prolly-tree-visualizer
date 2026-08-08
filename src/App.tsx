@@ -349,7 +349,7 @@ function App() {
     return (
       <main className="loading-screen">
         <div className="loader-mark"><span /><span /><span /></div>
-        <p>Booting DoltLite’s prolly engine in WebAssembly…</p>
+        <p>Booting prolly-map’s Rust engine in WebAssembly…</p>
       </main>
     );
   }
@@ -451,9 +451,9 @@ function App() {
           </svg>
           <div><strong>Prolly Tree</strong></div>
         </div>
-        <a className="runtime-pill" href="https://github.com/dolthub/doltlite" target="_blank" rel="noreferrer">
+        <a className="runtime-pill" href="https://github.com/crabbuild/prolly" target="_blank" rel="noreferrer">
           <span>Powered by</span>
-          <img src="https://raw.githubusercontent.com/dolthub/doltlite/master/doltlite-logo.png" alt="DoltLite" />
+          <strong>prolly-map</strong>
           <b>{engineRef.current?.version}</b>
         </a>
       </header>
@@ -565,7 +565,7 @@ function App() {
       )}
 
       {error && <div className="error-banner"><strong>Engine error</strong><span>{error}</span><button onClick={() => setError(undefined)}>×</button></div>}
-      {busy && <div className="busy-bar"><span /> {gcRunning ? 'DoltLite is collecting unreachable chunks…' : 'DoltLite is rebuilding and hashing the tree…'}</div>}
+      {busy && <div className="busy-bar"><span /> {gcRunning ? 'prolly-map is collecting unreachable nodes…' : 'prolly-map is rebuilding and hashing the tree…'}</div>}
 
       <div className={tab === 'order' ? 'workbench-layout order-mode' : 'workbench-layout'}>
         <div className="workbench-main">
@@ -605,7 +605,7 @@ function App() {
               <NodeInspector node={selectedNode} rows={current.rows} onClose={() => setSelectedHash(undefined)} />
             </div>
             <div className="tree-storage-note">
-              Leaf chunks store encoded keys and SQL values. Internal chunks store delimiter keys and child addresses. Select a chunk to inspect it.
+              Leaf nodes store encoded keys and values. Internal nodes store lower-bound keys and child addresses. Select a node to inspect it.
             </div>
             {actionDetails === 'diff' && diffPlayback && <DiffPlaybackPanel playback={diffPlayback} rowDifferences={metrics.tree.rowDiffs.length} />}
             {actionDetails === 'lookup' && lookupDetails && <LookupDetailsPanel details={lookupDetails} snapshot={current} visited={trace} activeHash={activeTraceHash} />}
@@ -689,11 +689,11 @@ function App() {
           <section className="panel-view storage-view">
             <div className="data-view-head storage-head">
               <div>
-                <h2>Storage <InfoTip>Counts here cover the live chunks in the visualized prolly tree. The physical DoltLite store also contains catalogs and engine metadata.</InfoTip></h2>
+                <h2>Storage <InfoTip>Counts cover content-addressed nodes retained by this in-memory prolly-map engine.</InfoTip></h2>
                 <span>{storageMetrics.versions} {storageMetrics.versions === 1 ? 'version' : 'versions'}</span>
               </div>
               <div className="storage-actions">
-                <span>Keep HEAD only <InfoTip>Removes earlier versions from this lab and rebuilds the browser’s DoltLite database from HEAD.</InfoTip></span>
+                <span>Keep HEAD only <InfoTip>Removes earlier versions from this lab and rebuilds a fresh in-memory prolly-map store from HEAD.</InfoTip></span>
                 <button disabled={busy} onClick={runGarbageCollection}>{gcRunning ? 'Collecting…' : 'Garbage collect'}</button>
               </div>
             </div>
@@ -721,8 +721,8 @@ function App() {
             </div>
 
             <div className="physical-storage">
-              <div><span>Physical DoltLite store</span><b>{physicalStore.chunksInStore.toLocaleString()} chunks</b></div>
-              <div><span>Exported database</span><b>{physicalStore.databaseBytes.toLocaleString()} B</b></div>
+              <div><span>In-memory node store</span><b>{physicalStore.chunksInStore.toLocaleString()} nodes</b></div>
+              <div><span>Encoded node bytes</span><b>{physicalStore.databaseBytes.toLocaleString()} B</b></div>
             </div>
 
             <div className="chunk-makeup">
@@ -738,7 +738,7 @@ function App() {
               <div className="chunk-makeup-legend">
                 <span><i className="makeup-live" /><span>HEAD tree <InfoTip>Every live root, internal, and leaf chunk shown in the Tree tab.</InfoTip></span><b>{liveTableChunks}</b></span>
                 <span><i className="makeup-history" /><span>Historical trees <InfoTip>Root, internal, and leaf chunks used only by earlier versions.</InfoTip></span><b>{historicalTreeChunks}</b></span>
-                <span><i className="makeup-metadata" /><span>Engine metadata <InfoTip>Everything else, including sqlite_schema, catalogs, working sets, refs, and commits.</InfoTip></span><b>{metadataChunks}</b></span>
+                <span><i className="makeup-metadata" /><span>Other retained nodes <InfoTip>Content-addressed nodes retained by the engine but not present in the visible version timeline.</InfoTip></span><b>{metadataChunks}</b></span>
               </div>
             </div>
 
@@ -827,7 +827,7 @@ function App() {
       {tab !== 'order' && <footer>
         <span>Runs entirely in your browser. No database server, no simulated tree.</span>
         <a href="https://www.dolthub.com/docs/architecture/storage-engine/prolly-tree/" target="_blank" rel="noreferrer">Read more about Prolly Trees</a>
-        <span>DoltLite format v12 · {current.databaseBytes.toLocaleString()} B exported · {current.chunksInStore} stored chunks</span>
+        <span>prolly-map compact format · {current.databaseBytes.toLocaleString()} encoded B · {current.chunksInStore} stored nodes</span>
       </footer>}
     </div>
   );

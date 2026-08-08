@@ -121,7 +121,7 @@ export function missingKeyLabel(node: ProllyNode, lookupKey: number): KeyLabelPa
 }
 
 export function routeKeyForLookup(node: ProllyNode, lookupKey: number) {
-  const entry = node.entries.find((candidate) => Number(candidate.key) >= lookupKey) ?? node.entries.at(-1);
+  const entry = node.entries.findLast((candidate) => Number(candidate.key) <= lookupKey) ?? node.entries[0];
   return entry === undefined ? undefined : Number(entry.key);
 }
 

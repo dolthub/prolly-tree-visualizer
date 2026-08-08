@@ -48,6 +48,7 @@ code { font-family: var(--mono); }
 .runtime-pill { display: flex; align-items: center; gap: 9px; border: 1px solid #3b4b72; background: #182134; border-radius: 999px; padding: 8px 12px; color: #9cadd0; font-family: var(--mono); font-size: 11px; text-decoration: none; }
 .runtime-pill:hover { border-color: var(--accent); }
 .runtime-pill img { display: block; width: 86px; height: auto; }
+.runtime-pill strong { color: #fff; font-size: 12px; }
 .runtime-pill b { border-left: 1px solid #3b4b72; padding-left: 9px; color: var(--accent); font-weight: 500; }
 
 .database-summary { padding: 28px 4vw 18px; }
