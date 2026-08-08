@@ -46,9 +46,15 @@ export interface InsertionOrderBuild {
   snapshot: TreeSnapshot;
 }
 
+export interface InsertionOrderSource {
+  rootHash: string;
+  nodeHashes: string[];
+  snapshot: TreeSnapshot;
+}
+
 export interface InsertionOrderResult {
-  sorted: InsertionOrderBuild;
-  shuffled: InsertionOrderBuild;
+  current: InsertionOrderSource;
+  rebuilt: InsertionOrderBuild;
   identicalRoot: boolean;
   identicalChunks: boolean;
   rowCount: number;
@@ -249,8 +255,8 @@ export class ProllyEngine {
     return this.seed(count);
   }
 
-  compareInsertionOrders(): InsertionOrderResult {
-    const rows = bootstrapKeys(180).map((key) => ({ key, value: `value-${key}` }));
+  compareInsertionOrder(snapshot: TreeSnapshot): InsertionOrderResult {
+    const rows = snapshot.rows;
     const build = (ordered: RowValue[], draftKeys = new Set<number>()): InsertionOrderBuild => {
       const db = this.openDb();
       try {
@@ -276,9 +282,6 @@ export class ProllyEngine {
         const bytes = exportDatabase(this.sqlite3.wasm, db.pointer);
         const image = parseChunkStore(bytes);
         const { root, nodes } = findTableRoot(image.chunks, rows.map((row) => row.key), catalogHash);
-        if (root.level !== 1 || root.children.length !== 2 || nodes.size !== 3) {
-          throw new Error(`history-independence demo expected 3 live nodes, found ${nodes.size}`);
-        }
         const snapshot: TreeSnapshot = {
           id: -1,
           label: 'History independence build',
@@ -301,17 +304,20 @@ export class ProllyEngine {
         db.close();
       }
     };
-    const sortedRows = [...rows].sort((left, right) => left.key - right.key);
-    const sorted = build(sortedRows);
-    const shuffledRows = deterministicShuffle(sortedRows);
+    const current: InsertionOrderSource = {
+      rootHash: snapshot.rootHash,
+      nodeHashes: [...snapshot.nodes.keys()].sort(),
+      snapshot,
+    };
+    const shuffledRows = deterministicShuffle(rows);
     const draftKeys = new Set(shuffledRows.filter((_, index) => index % 6 === 0).map((row) => row.key));
-    const shuffled = build(shuffledRows, draftKeys);
+    const rebuilt = build(shuffledRows, draftKeys);
     return {
-      sorted,
-      shuffled,
-      identicalRoot: sorted.rootHash === shuffled.rootHash,
-      identicalChunks: sorted.nodeHashes.length === shuffled.nodeHashes.length
-        && sorted.nodeHashes.every((hash, index) => hash === shuffled.nodeHashes[index]),
+      current,
+      rebuilt,
+      identicalRoot: current.rootHash === rebuilt.rootHash,
+      identicalChunks: current.nodeHashes.length === rebuilt.nodeHashes.length
+        && current.nodeHashes.every((hash, index) => hash === rebuilt.nodeHashes[index]),
       rowCount: rows.length,
     };
   }

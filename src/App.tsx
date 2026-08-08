@@ -427,7 +427,7 @@ function App() {
     setError(undefined);
     window.setTimeout(() => {
       try {
-        setInsertionOrderResult(engine.compareInsertionOrders());
+        setInsertionOrderResult(engine.compareInsertionOrder(current));
         setOrderSelectedHash(undefined);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -560,7 +560,7 @@ function App() {
       {viewingHistorical && (
         <div className="history-view-banner">
           <span>Viewing version {String(viewedIndex + 1).padStart(2, '0')} of {String(snapshots.length).padStart(2, '0')}. Editing is paused for historical states.</span>
-          <button onClick={() => { resetTreeState(); setViewId(undefined); }}>Return to latest</button>
+          <button onClick={() => { resetTreeState(); setViewId(undefined); setInsertionOrderResult(undefined); }}>Return to latest</button>
         </div>
       )}
 
@@ -761,42 +761,42 @@ function App() {
             <div className="history-order-head">
               <div>
                 <h2>History independence <InfoTip>The same final rows produce the same chunks and root address even when edits arrive in a different order.</InfoTip></h2>
-                <p>Build A inserts 180 rows in key order. Build B shuffles the inserts and rewrites 30 draft values.</p>
+                <p>Rebuild the current {current.rows.length.toLocaleString()} rows in shuffled order, with temporary draft-value updates.</p>
               </div>
-              <button className="run-order-button" disabled={busy} onClick={runInsertionOrderDemo}>{insertionOrderResult ? 'Build both again' : 'Build both trees'}</button>
+              <button className="run-order-button" disabled={busy} onClick={runInsertionOrderDemo}>{insertionOrderResult ? 'Rebuild again' : 'Rebuild current tree'}</button>
             </div>
 
             {insertionOrderResult ? (
               <>
                 <div className={insertionOrderResult.identicalRoot && insertionOrderResult.identicalChunks ? 'history-match pass' : 'history-match fail'}>
-                  <code>{insertionOrderResult.sorted.rootHash}</code>
+                  <code>{insertionOrderResult.current.rootHash}</code>
                   <span>{insertionOrderResult.identicalRoot ? 'same root' : 'different roots'}</span>
-                  <span>{insertionOrderResult.identicalChunks ? '3 / 3 live chunk addresses match' : 'live chunk addresses differ'}</span>
+                  <span>{insertionOrderResult.identicalChunks ? `${insertionOrderResult.current.nodeHashes.length} / ${insertionOrderResult.rebuilt.nodeHashes.length} live chunk addresses match` : 'live chunk addresses differ'}</span>
                 </div>
                 <div className="history-trees">
                   <article className="history-tree">
                     <header>
-                      <div><span>BUILD A</span><h3>Sorted inserts</h3></div>
-                      <code>{formatOrder(insertionOrderResult.sorted.order)}</code>
+                      <div><span>CURRENT</span><h3>{insertionOrderResult.current.snapshot.label}</h3></div>
+                      <code>{insertionOrderResult.current.snapshot.rows.length.toLocaleString()} rows · {insertionOrderResult.current.snapshot.nodes.size.toLocaleString()} live chunks</code>
                     </header>
                     <div className="history-tree-canvas">
-                      <TreeCanvas snapshot={insertionOrderResult.sorted.snapshot} trace={NO_HIGHLIGHTS} diffHighlight={NO_HIGHLIGHTS} rowDiffs={NO_ROW_DIFFS} compact selectedHash={orderSelectedHash} onSelect={setOrderSelectedHash} />
+                      <TreeCanvas snapshot={insertionOrderResult.current.snapshot} trace={NO_HIGHLIGHTS} diffHighlight={NO_HIGHLIGHTS} rowDiffs={NO_ROW_DIFFS} compact selectedHash={orderSelectedHash} onSelect={setOrderSelectedHash} />
                     </div>
                   </article>
                   <article className="history-tree">
                     <header>
-                      <div><span>BUILD B</span><h3>Shuffled inserts + {insertionOrderResult.shuffled.updates.length} updates</h3></div>
-                      <code>{formatOrder(insertionOrderResult.shuffled.order)}</code>
+                      <div><span>REBUILT</span><h3>Shuffled inserts + {insertionOrderResult.rebuilt.updates.length} updates</h3></div>
+                      <code>{formatOrder(insertionOrderResult.rebuilt.order)}</code>
                     </header>
                     <div className="history-tree-canvas">
-                      <TreeCanvas snapshot={insertionOrderResult.shuffled.snapshot} trace={NO_HIGHLIGHTS} diffHighlight={NO_HIGHLIGHTS} rowDiffs={NO_ROW_DIFFS} compact selectedHash={orderSelectedHash} onSelect={setOrderSelectedHash} />
+                      <TreeCanvas snapshot={insertionOrderResult.rebuilt.snapshot} trace={NO_HIGHLIGHTS} diffHighlight={NO_HIGHLIGHTS} rowDiffs={NO_ROW_DIFFS} compact selectedHash={orderSelectedHash} onSelect={setOrderSelectedHash} />
                     </div>
                   </article>
                 </div>
                 <p className="history-node-hint">Select a node in either tree to match its address in both.</p>
               </>
             ) : (
-              <div className="history-empty">The two three-node trees will render here.</div>
+              <div className="history-empty">The current tree and its shuffled rebuild will render here.</div>
             )}
           </section>
         )}
@@ -812,7 +812,7 @@ function App() {
             {[...snapshots].reverse().map((snapshot, reverseIndex) => {
               const index = snapshots.length - reverseIndex - 1;
               return (
-                <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { resetTreeState(); setViewId(snapshot.id); }} disabled={snapshot.id === current.id}>
+                <button key={snapshot.id} className={snapshot.id === current.id ? 'selected' : ''} onClick={() => { resetTreeState(); setViewId(snapshot.id); setInsertionOrderResult(undefined); }} disabled={snapshot.id === current.id}>
                   <span>Version {String(index + 1).padStart(2, '0')}{index === snapshots.length - 1 && <em>latest</em>}</span>
                   <b>{snapshot.label}</b>
                   <code>{snapshot.rootHash}</code>
