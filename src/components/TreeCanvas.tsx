@@ -19,6 +19,22 @@ interface KeyLabelPart {
   missing?: boolean;
 }
 
+const KEY_PREVIEW_CHARACTERS = 34;
+
+function partsForIndexes(keys: string[], indexes: number[], matchIndexes: number[]) {
+  return indexes.flatMap((index, position): KeyLabelPart[] => {
+    const previousIndex = indexes[position - 1];
+    const omitted = position > 0 && index - previousIndex > 1
+      ? [{ text: '…', match: false }]
+      : [];
+    return [...omitted, { text: keys[index], match: matchIndexes.includes(index) }];
+  });
+}
+
+function previewLength(parts: KeyLabelPart[]) {
+  return parts.reduce((length, part) => length + part.text.length, 0) + Math.max(0, parts.length - 1) * 3;
+}
+
 function layout(root: ProllyNode, minimumWidth: number) {
   const positions = new Map<string, Point>();
   let leafIndex = 0;
@@ -57,18 +73,29 @@ export function shownKeys(node: ProllyNode, lookupKeys: number[] = []): KeyLabel
   const keys = node.entries.map((entry) => String(entry.key));
   const lookupKeySet = new Set(lookupKeys);
   const matchIndexes = node.entries.flatMap((entry, index) => lookupKeySet.has(Number(entry.key)) ? [index] : []);
-  const indexes = keys.length <= 6
-    ? keys.map((_, index) => index)
-    : matchIndexes.length > 0
-      ? [...new Set([0, ...matchIndexes, keys.length - 1])].sort((left, right) => left - right)
-      : [0, 1, 2, keys.length - 2, keys.length - 1];
-  return indexes.flatMap((index, position) => {
-    const previousIndex = indexes[position - 1];
-    const omitted = position > 0 && index - previousIndex > 1
-      ? [{ text: '…', match: false }]
-      : [];
-    return [...omitted, { text: keys[index], match: matchIndexes.includes(index) }];
-  });
+  const allIndexes = keys.map((_, index) => index);
+  const allParts = partsForIndexes(keys, allIndexes, matchIndexes);
+  if (matchIndexes.length === 0 && previewLength(allParts) <= KEY_PREVIEW_CHARACTERS) return allParts;
+
+  if (matchIndexes.length > 0) {
+    const withEdges = [...new Set([0, ...matchIndexes, keys.length - 1])].sort((left, right) => left - right);
+    const edgeParts = partsForIndexes(keys, withEdges, matchIndexes);
+    if (previewLength(edgeParts) <= KEY_PREVIEW_CHARACTERS) return edgeParts;
+    if (matchIndexes.length === 1) {
+      const match = matchIndexes[0];
+      const nearby = [match - 1, match, match + 1].filter((index) => index >= 0 && index < keys.length);
+      const nearbyParts = partsForIndexes(keys, nearby, matchIndexes);
+      if (previewLength(nearbyParts) <= KEY_PREVIEW_CHARACTERS) return nearbyParts;
+    }
+    return partsForIndexes(keys, matchIndexes, matchIndexes);
+  }
+
+  const outsideIndexes = [...new Set([0, 1, keys.length - 2, keys.length - 1])]
+    .filter((index) => index >= 0 && index < keys.length)
+    .sort((left, right) => left - right);
+  const outsideParts = partsForIndexes(keys, outsideIndexes, matchIndexes);
+  if (previewLength(outsideParts) <= KEY_PREVIEW_CHARACTERS) return outsideParts;
+  return partsForIndexes(keys, [0, keys.length - 1], matchIndexes);
 }
 
 export function missingKeyLabel(node: ProllyNode, lookupKey: number): KeyLabelPart[] {

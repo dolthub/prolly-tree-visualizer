@@ -26,6 +26,16 @@ describe('tree key labels', () => {
     ]);
   });
 
+  it('compresses wide keys even when the leaf has six entries', () => {
+    expect(shownKeys(leaf([12347, 12348, 12349, 12350, 12351, 12352]))).toEqual([
+      { text: '12347', match: false },
+      { text: '12348', match: false },
+      { text: '…', match: false },
+      { text: '12351', match: false },
+      { text: '12352', match: false },
+    ]);
+  });
+
   it('places a missing key between its surrounding keys', () => {
     expect(missingKeyLabel(leaf([1, 4, 8, 12]), 6)).toEqual([
       { text: '4', match: false },
