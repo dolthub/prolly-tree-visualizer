@@ -59,6 +59,21 @@ Cross-Origin-Embedder-Policy: require-corp
 The current visualizer intentionally starts with a fresh browser-session
 database on each page load so experiments are repeatable.
 
+## Run it with Docker
+
+No Node toolchain needed. The image builds the site and serves it with nginx:
+
+```bash
+docker build -t prolly-tree-visualizer .
+docker run --rm -p 8080:80 prolly-tree-visualizer
+```
+
+Open <http://localhost:8080>.
+
+The bundled `nginx.conf` sends the same `Cross-Origin-Opener-Policy` and
+`Cross-Origin-Embedder-Policy` headers Vite uses, and serves the DoltLite WASM
+module as `application/wasm`.
+
 ## Using the lab
 
 1. **Insert or update** writes an integer key and value; **Delete** removes a

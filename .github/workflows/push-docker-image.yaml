@@ -1,0 +1,79 @@
+name: Push Docker Image to DockerHub
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'SemVer format release tag, i.e. 0.2.0'
+        required: true
+  repository_dispatch:
+    types: [ push-docker-image ]
+
+jobs:
+  get-release-id:
+    name: Get Prolly Tree Visualizer Release Id
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.get_release.outputs.release_id }}
+    steps:
+      - name: Get Release
+        id: get_release
+        run: |
+          release_id="$RELEASE_ID"
+          if [ "$EVENT_TYPE" == "workflow_dispatch" ]; then
+            release_id=$(curl -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/dolthub/prolly-tree-visualizer/releases/tags/v${{ github.event.inputs.version }} | jq '.id')
+          fi
+          echo "release_id=$release_id" >> $GITHUB_OUTPUT
+        env:
+          EVENT_TYPE: ${{ github.event_name }}
+          RELEASE_ID: ${{ github.event.client_payload.release_id }}
+
+  docker-image-push:
+    name: Push Docker Image
+    needs: get-release-id
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+      # The Dockerfile builds the site with --platform=$BUILDPLATFORM, so the
+      # npm build runs once natively and only the nginx layer varies per arch.
+      - name: Build and push Prolly Tree Visualizer image
+        uses: docker/build-push-action@v5
+        with:
+          platforms: linux/amd64,linux/arm64
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: dolthub/prolly-tree-visualizer:${{ github.event.inputs.version || github.event.client_payload.version }}, dolthub/prolly-tree-visualizer:latest
+      - name: Update Docker Hub README for Prolly Tree Visualizer image
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+          repository: dolthub/prolly-tree-visualizer
+          readme-filepath: ./docker/README.md
+      # Only reached once the image is on Docker Hub: promotes the release from
+      # pre-release to latest. A failed build or push leaves it a pre-release.
+      - run: |
+          gh api \
+          --method PATCH \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          /repos/$REPO_OWNER/$REPO_NAME/releases/$RELEASE_ID \
+          -F "draft=false" -F "prerelease=false" -F "make_latest=true"
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO_OWNER: dolthub
+          REPO_NAME: prolly-tree-visualizer
+          RELEASE_ID: ${{ needs.get-release-id.outputs.release_id }}

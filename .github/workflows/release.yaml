@@ -1,0 +1,110 @@
+name: Release Prolly Tree Visualizer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'SemVer format release tag, i.e. 0.2.0'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  format-version:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.format_version.outputs.version }}
+    steps:
+      - name: Format Input
+        id: format_version
+        run: |
+          version="${{ github.event.inputs.version }}"
+          if [[ $version == v* ]];
+          then
+            version="${version:1}"
+          fi
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+  create_release:
+    needs: format-version
+    runs-on: ubuntu-22.04
+    name: Release Prolly Tree Visualizer
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.PROLLY_TREE_VISUALIZER_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      # npm version rewrites package.json and package-lock.json together, so the
+      # lockfile does not drift from the tag.
+      - name: Update version
+        run: npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version
+        env:
+          NEW_VERSION: ${{ needs.format-version.outputs.version }}
+      - uses: EndBug/add-and-commit@v9.1.4
+        with:
+          message: ${{ format('[ga-bump-release] Update Prolly Tree Visualizer version to {0} and release v{0}', needs.format-version.outputs.version) }}
+          add: package.json package-lock.json
+          cwd: .
+          pull: "--ff"
+      - name: Set OUT_DIR
+        run: echo "OUT_DIR=$RUNNER_TEMP/prolly-tree-visualizer-assets" >> "$GITHUB_ENV"
+      - name: Prepare output directory
+        run: mkdir -p "$OUT_DIR"
+      - name: Build Static Bundle
+        id: build_bundle
+        run: |
+          set -euo pipefail
+          # Read the commit created by add-and-commit so the tag points at the
+          # bumped version rather than the commit this run started from.
+          latest=$(git rev-parse HEAD)
+          echo "commitish=$latest" >> "$GITHUB_OUTPUT"
+          npm ci
+          npm run build
+          tar -czf "$OUT_DIR/prolly-tree-visualizer-$VERSION-dist.tar.gz" -C dist .
+        env:
+          VERSION: ${{ needs.format-version.outputs.version }}
+      - name: Create Release
+        id: create_release
+        uses: dolthub/create-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ needs.format-version.outputs.version }}
+          release_name: ${{ needs.format-version.outputs.version }}
+          draft: false
+          # Stays a pre-release until push-docker-image.yaml confirms the image
+          # reached Docker Hub, then that workflow promotes it to latest.
+          prerelease: true
+          commitish: ${{ steps.build_bundle.outputs.commitish }}
+      - name: Upload Assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "v${{ needs.format-version.outputs.version }}" \
+            "$OUT_DIR/prolly-tree-visualizer-${{ needs.format-version.outputs.version }}-dist.tar.gz" \
+            --clobber
+
+  docker-image-push:
+    needs: [format-version, create_release]
+    runs-on: ubuntu-22.04
+    steps:
+      # REPO_ACCESS_TOKEN must be a PAT. Events raised with the default
+      # GITHUB_TOKEN do not trigger other workflows, so the fallback below will
+      # dispatch successfully but never start push-docker-image.yaml.
+      - name: Trigger Push Docker Image
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.REPO_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
+          event-type: push-docker-image
+          client-payload: >-
+            {"version":"${{ needs.format-version.outputs.version }}",
+             "release_id":"${{ needs.create_release.outputs.release_id }}"}
