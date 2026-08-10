@@ -125,18 +125,19 @@ export function routeKeyForLookup(node: ProllyNode, lookupKey: number) {
   return entry === undefined ? undefined : Number(entry.key);
 }
 
-export function rangeKeysForNode(node: ProllyNode, start: number, end: number) {
-  const low = Math.min(start, end);
-  const high = Math.max(start, end);
+export function rangeKeysForNode(node: ProllyNode, firstKey?: number, lastKey?: number) {
+  const endpoints = [...new Set([firstKey, lastKey].filter((key): key is number => key !== undefined))];
   if (node.level > 0) {
-    return node.children.flatMap((child, index) => {
-      const childMin = Number(child.minKey);
-      const childMax = Number(child.maxKey);
-      return childMax >= low && childMin <= high ? [Number(node.entries[index].key)] : [];
-    });
+    const min = Number(node.minKey);
+    const max = Number(node.maxKey);
+    return [...new Set(endpoints.flatMap((key) => {
+      if (key < min || key > max) return [];
+      const routeKey = routeKeyForLookup(node, key);
+      return routeKey === undefined ? [] : [routeKey];
+    }))];
   }
-  const matches = node.entries.map((entry) => Number(entry.key)).filter((key) => key >= low && key <= high);
-  return matches.length <= 1 ? matches : [matches[0], matches.at(-1)!];
+  const keys = new Set(node.entries.map((entry) => Number(entry.key)));
+  return endpoints.filter((key) => keys.has(key));
 }
 
 function shownChanges(changes: RowDiff[]) {
@@ -226,7 +227,7 @@ export function TreeCanvas({ snapshot, baseline, trace, activeTraceHash, diffHig
           const isNew = Boolean(baselineHashes && !baselineHashes.has(node.hash));
           const lookupKeys = lookup && isTrace
             ? lookup.kind === 'range'
-              ? rangeKeysForNode(node, lookup.start, lookup.end)
+              ? rangeKeysForNode(node, lookup.firstKey, lookup.lastKey)
               : node.level === 0 && lookup.found
                 ? [lookup.key]
                 : node.level > 0

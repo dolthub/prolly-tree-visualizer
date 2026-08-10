@@ -45,4 +45,4 @@ export interface RowDiff {
 
 export type LookupResult =
   | { kind: 'key'; key: number; found: boolean }
-  | { kind: 'range'; start: number; end: number };
+  | { kind: 'range'; start: number; end: number; firstKey?: number; lastKey?: number };

@@ -393,9 +393,10 @@ function App() {
     const path = traceRange(current.root, start, end);
     const low = Math.min(start, end);
     const high = Math.max(start, end);
-    const matchedRows = current.rows.filter((row) => row.key >= low && row.key <= high).length;
+    const rows = current.rows.filter((row) => row.key >= low && row.key <= high);
+    const matchedRows = rows.length;
     animateTrace(path);
-    setLookupResult({ kind: 'range', start, end });
+    setLookupResult({ kind: 'range', start, end, firstKey: rows[0]?.key, lastKey: rows.at(-1)?.key });
     setLookupDetails({ kind: 'range', start, end, matchedRows, path });
     setActionDetails('lookup');
     setDiffHighlight(new Set());
