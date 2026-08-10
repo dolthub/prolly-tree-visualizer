@@ -74,6 +74,28 @@ The bundled `nginx.conf` sends the same `Cross-Origin-Opener-Policy` and
 `Cross-Origin-Embedder-Policy` headers Vite uses, and serves the DoltLite WASM
 module as `application/wasm`.
 
+## Deploying
+
+Deploys run from a released Docker image, so cut the release first and deploy
+it second.
+
+1. **Cut a release.** Run the **Release Prolly Tree Visualizer** workflow
+   (`.github/workflows/release.yaml`) from the Actions tab of this repo with
+   `workflow_dispatch`, supplying a SemVer tag such as `0.2.0`. The workflow
+   bumps `package.json` and `package-lock.json` on `main`, tags `v<version>`,
+   attaches the static bundle to the GitHub release, and then triggers
+   **Push Docker Image to DockerHub**, which publishes
+   `dolthub/prolly-tree-visualizer:<version>` and `:latest` for amd64 and
+   arm64.
+2. **Confirm the image landed.** The release stays a pre-release until the
+   Docker push succeeds; the push workflow promotes it to latest. If the
+   release is still marked pre-release, the image did not publish and the
+   deploy has nothing new to pull.
+3. **Deploy from the infrastructure repo.** In the internal infrastructure
+   repo, run the **deploy dev** workflow and choose `prollytree` as the
+   service. Verify dev, then run **deploy prod** with the same `prollytree`
+   choice.
+
 ## Using the lab
 
 1. **Insert or update** writes an integer key and value; **Delete** removes a
