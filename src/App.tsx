@@ -12,6 +12,7 @@ import { LookupDetailsPanel, type LookupDetails } from './components/LookupDetai
 import { MutationCostPanel } from './components/MutationCostPanel';
 import { NodeInspector } from './components/NodeInspector';
 import { TreeCanvas } from './components/TreeCanvas';
+import doltHubLogo from './assets/dolthub-logo.svg';
 
 type Tab = 'tree' | 'diff' | 'chunks' | 'storage' | 'order';
 type ControlMode = 'modify' | 'lookup';
@@ -839,9 +840,16 @@ function App() {
       </div>
 
       {tab !== 'order' && <footer>
-        <span>Runs entirely in your browser. No database server, no simulated tree.</span>
-        <a href="https://www.dolthub.com/docs/architecture/storage-engine/prolly-tree/" target="_blank" rel="noreferrer">Read more about Prolly Trees</a>
-        <span>DoltLite format v12 · {current.databaseBytes.toLocaleString()} B exported · {current.chunksInStore} stored chunks</span>
+        <div className="footer-meta">
+          <span>Runs entirely in your browser. No database server, no simulated tree.</span>
+          <a href="https://www.dolthub.com/docs/architecture/storage-engine/prolly-tree/" target="_blank" rel="noreferrer">Read more about Prolly Trees</a>
+          <span>DoltLite format v12 · {current.databaseBytes.toLocaleString()} B exported · {current.chunksInStore} stored chunks</span>
+        </div>
+        <div className="footer-brand">
+          <a href="https://www.dolthub.com/" target="_blank" rel="noreferrer" aria-label="Visit DoltHub">
+            <img src={doltHubLogo} alt="DoltHub" />
+          </a>
+        </div>
       </footer>}
     </div>
   );
