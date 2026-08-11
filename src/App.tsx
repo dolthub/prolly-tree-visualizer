@@ -502,6 +502,7 @@ function App() {
                 const key = Number(deleteInput);
                 if (Number.isSafeInteger(key)) run((engine) => engine.remove(key));
               }}>Delete</button>
+              <button className="danger-quiet" title="Delete a randomly selected row" disabled={busy || viewingHistorical || current.rows.length === 0} onClick={() => run((engine) => engine.removeRandom())}>Random</button>
             </div>
           </div>
           <div className="control-section bulk-section">

@@ -139,6 +139,12 @@ export class ProllyEngine {
     return this.capture(`Deleted key ${key}`);
   }
 
+  removeRandom() {
+    const rows = this.rows();
+    const row = rows[Math.floor(Math.random() * rows.length)];
+    return row ? this.remove(row.key) : this.capture('No rows to delete');
+  }
+
   addSequential(count: number) {
     const first = Number(this.db.selectValue('SELECT COALESCE(MAX(id), 0) + 1 FROM prolly_rows'));
     this.insertSequential(first, count, 'value');

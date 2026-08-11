@@ -62,7 +62,7 @@ code { font-family: var(--mono); }
 .control-deck { margin: 0 4vw 28px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); overflow: hidden; box-shadow: 0 8px 30px rgba(37, 47, 44, .04); }
 .control-tabs { display: flex; gap: 4px; padding: 7px; border-bottom: 1px solid var(--line); background: #f1f3f8; }
 .control-row { display: grid; align-items: stretch; }
-.modify-row { grid-template-columns: minmax(440px, 1.25fr) minmax(190px, .5fr) minmax(390px, 1.2fr); }
+.modify-row { grid-template-columns: minmax(440px, 1.25fr) minmax(270px, .65fr) minmax(390px, 1.2fr); }
 .lookup-row { grid-template-columns: minmax(220px, .7fr) minmax(360px, 1fr) minmax(220px, .65fr); }
 .control-section { min-width: 0; padding: 13px 14px 14px; border-left: 1px solid var(--line); }
 .control-section:first-child { border-left: 0; }
@@ -369,7 +369,7 @@ footer a:hover { text-decoration: underline; }
 }
 
 @media (max-width: 1200px) {
-  .modify-row, .lookup-row { grid-template-columns: minmax(0, 1fr) minmax(210px, .55fr); }
+  .modify-row, .lookup-row { grid-template-columns: minmax(0, 1fr) minmax(270px, .55fr); }
   .bulk-section, .diff-lookup-section { grid-column: 1 / 3; }
   .bulk-section, .diff-lookup-section { border-top: 1px solid var(--line); }
 }

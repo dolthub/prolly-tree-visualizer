@@ -100,8 +100,8 @@ it second.
 
 ## Using the lab
 
-1. **Insert or update** writes an integer key and value; **Delete** removes a
-   key in its own compact control.
+1. **Insert or update** writes an integer key and value; **Delete** removes an
+   entered key or a randomly selected existing row.
 2. **Key lookup** highlights one root-to-leaf path, **Range lookup** highlights
    every overlapping branch, and **Diff lookup** highlights the node paths
    changed since the immediately previous version.
