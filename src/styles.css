@@ -281,7 +281,7 @@ button.mutation-stage:disabled { cursor: default; }
 .makeup-history { background: var(--orange); }
 .makeup-metadata { background: #8b93a7; }
 .chunk-makeup-legend { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; margin-top: 14px; }
-.chunk-makeup-legend > span { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.chunk-makeup-legend > span { display: grid; grid-template-columns: 10px max-content auto; align-items: center; justify-content: center; gap: 7px; color: var(--muted); font-size: 11px; }
 .chunk-makeup-legend i { width: 9px; height: 9px; border-radius: 3px; }
 .chunk-makeup-legend > span > span { display: flex; align-items: center; min-width: 0; }
 .chunk-makeup-legend b { color: var(--ink); font: 500 11px var(--mono); }

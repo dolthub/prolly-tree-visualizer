@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ProllyEngine, type GrowthResult, type InsertionOrderResult } from './engine';
 import { countSharedNodes, diffRows, estimateMutationSplitProbability, leafNodes, traceRange, traceSearch } from './prolly';
-import { calculateVersionStorage, countHistoricalTreeChunks } from './storage';
+import { calculatePhysicalChunkMakeup, calculateVersionStorage } from './storage';
 import { calculateMutationCost } from './mutationCost';
 import { buildDiffTraversal, type DiffTraversalFrame } from './diffTraversal';
 import type { LookupResult, ProllyNode, TreeSnapshot } from './types';
@@ -204,14 +204,54 @@ function App() {
     setRangeEnd(String(quarter.key));
   };
 
+  const captureConsoleChanges = (engine: ProllyEngine) => {
+    if (operationPendingRef.current) return;
+    operationPendingRef.current = true;
+    resetTreeState();
+    setBusy(true);
+    setError(undefined);
+    window.setTimeout(() => {
+      try {
+        const snapshot = engine.capture('Captured console changes');
+        resetTreeState();
+        setSnapshots((existing) => [...existing, snapshot]);
+        setViewId(undefined);
+        setInsertionOrderResult(undefined);
+        setOrderSelectedHash(undefined);
+        setShowNewAddresses(true);
+        setActionDetails('mutation');
+        selectExistingInputs(snapshot);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        operationPendingRef.current = false;
+        setBusy(false);
+      }
+    }, 20);
+  };
+
   useEffect(() => {
     let cancelled = false;
+    let restoreConsoleGlobals: (() => void) | undefined;
     void ProllyEngine.create().then((engine) => {
       if (cancelled) {
         engine.close();
         return;
       }
       engineRef.current = engine;
+      const dbDescriptor = Object.getOwnPropertyDescriptor(window, 'db');
+      const refreshDescriptor = Object.getOwnPropertyDescriptor(window, 'refreshProllyTree');
+      Object.defineProperty(window, 'db', { configurable: true, get: () => engine.database });
+      Object.defineProperty(window, 'refreshProllyTree', {
+        configurable: true,
+        value: () => captureConsoleChanges(engine),
+      });
+      restoreConsoleGlobals = () => {
+        if (dbDescriptor) Object.defineProperty(window, 'db', dbDescriptor);
+        else delete (window as typeof window & { db?: unknown }).db;
+        if (refreshDescriptor) Object.defineProperty(window, 'refreshProllyTree', refreshDescriptor);
+        else delete (window as typeof window & { refreshProllyTree?: unknown }).refreshProllyTree;
+      };
       const first = engine.seed();
       setSnapshots([first]);
       setCompareFromId(first.id);
@@ -225,6 +265,7 @@ function App() {
     return () => {
       cancelled = true;
       cancelAnimation(false);
+      restoreConsoleGlobals?.();
       engineRef.current?.close();
     };
   }, []);
@@ -361,9 +402,7 @@ function App() {
   }
 
   const physicalStore = latest ?? current;
-  const liveTableChunks = physicalStore.nodes.size;
-  const historicalTreeChunks = Math.min(countHistoricalTreeChunks(snapshots), Math.max(0, physicalStore.chunksInStore - liveTableChunks));
-  const metadataChunks = Math.max(0, physicalStore.chunksInStore - liveTableChunks - historicalTreeChunks);
+  const { liveTableChunks, historicalChunks, metadataChunks } = calculatePhysicalChunkMakeup(physicalStore);
   const chunkWidth = (count: number) => physicalStore.chunksInStore === 0 ? 0 : count / physicalStore.chunksInStore * 100;
 
   const highlightedRowDiffs = lastChangeActive && previous && diffPlayback?.revealedRows
@@ -743,17 +782,17 @@ function App() {
             <div className="chunk-makeup">
               <div className="chunk-makeup-head">
                 <span>Physical chunk makeup</span>
-                <small>{liveTableChunks} + {historicalTreeChunks} + {metadataChunks} = {physicalStore.chunksInStore}</small>
+                <small>{liveTableChunks} + {historicalChunks} + {metadataChunks} = {physicalStore.chunksInStore}</small>
               </div>
-              <div className="chunk-makeup-bar" aria-label={`${liveTableChunks} HEAD tree chunks, ${historicalTreeChunks} historical tree chunks, and ${metadataChunks} engine metadata chunks`}>
+              <div className="chunk-makeup-bar" aria-label={`${liveTableChunks} HEAD tree chunks, ${historicalChunks} historical chunks, and ${metadataChunks} current engine metadata chunks`}>
                 <span className="makeup-live" style={{ width: `${chunkWidth(liveTableChunks)}%` }} />
-                <span className="makeup-history" style={{ width: `${chunkWidth(historicalTreeChunks)}%` }} />
+                <span className="makeup-history" style={{ width: `${chunkWidth(historicalChunks)}%` }} />
                 <span className="makeup-metadata" style={{ width: `${chunkWidth(metadataChunks)}%` }} />
               </div>
               <div className="chunk-makeup-legend">
                 <span><i className="makeup-live" /><span>HEAD tree <InfoTip>Every live root, internal, and leaf chunk shown in the Tree tab.</InfoTip></span><b>{liveTableChunks}</b></span>
-                <span><i className="makeup-history" /><span>Historical trees <InfoTip>Root, internal, and leaf chunks used only by earlier versions.</InfoTip></span><b>{historicalTreeChunks}</b></span>
-                <span><i className="makeup-metadata" /><span>Engine metadata <InfoTip>Everything else, including sqlite_schema, catalogs, working sets, refs, and commits.</InfoTip></span><b>{metadataChunks}</b></span>
+                <span><i className="makeup-history" /><span>Historical chunks <InfoTip>Chunks retained for earlier database states, including prior table trees, catalogs, working sets, and refs.</InfoTip></span><b>{historicalChunks}</b></span>
+                <span><i className="makeup-metadata" /><span>Engine metadata <InfoTip>The current schema, catalog, working set, refs, and commits. This is the live engine overhead.</InfoTip></span><b>{metadataChunks}</b></span>
               </div>
             </div>
 
@@ -842,6 +881,7 @@ function App() {
       {tab !== 'order' && <footer>
         <div className="footer-meta">
           <span>Runs entirely in your browser. No database server, no simulated tree.</span>
+          <span>Console: <code>window.db</code> · <code>refreshProllyTree()</code></span>
           <a href="https://www.dolthub.com/docs/architecture/storage-engine/prolly-tree/" target="_blank" rel="noreferrer">Read more about Prolly Trees</a>
           <span>DoltLite format v12 · {current.databaseBytes.toLocaleString()} B exported · {current.chunksInStore} stored chunks</span>
         </div>

@@ -29,6 +29,7 @@ export interface TreeSnapshot {
   root: ProllyNode;
   rows: RowValue[];
   nodes: Map<string, ProllyNode>;
+  engineMetadataChunks: number;
   chunksInStore: number;
   databaseBytes: number;
   timestamp: number;

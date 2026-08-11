@@ -123,6 +123,15 @@ it second.
 Click any node to inspect its full address, encoded size, keys, SQL values, or
 child hashes.
 
+You can also mutate the live DoltLite database from the browser console and
+then capture the result in the visualizer:
+
+```js
+window.db.exec("INSERT INTO prolly_rows VALUES (10000, 'from-console')")
+window.db.exec("DELETE FROM prolly_rows WHERE id = 1")
+window.refreshProllyTree()
+```
+
 ## How it stays tied to the real engine
 
 The data path for each operation is:

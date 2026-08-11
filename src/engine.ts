@@ -64,6 +64,7 @@ export class ProllyEngine {
   private readonly sqlite3: Sqlite3;
   private db: Db;
   private snapshotId = 0;
+  private engineMetadataChunks: number | undefined;
   readonly version: string;
 
   private constructor(sqlite3: Sqlite3) {
@@ -81,6 +82,10 @@ export class ProllyEngine {
 
   private openDb() {
     return new this.sqlite3.oo1.DB(`/prolly-tree-lab-${Date.now()}-${Math.random()}.db`, 'c') as Db;
+  }
+
+  get database(): Db {
+    return this.db;
   }
 
   private createSchema(db = this.db) {
@@ -102,10 +107,17 @@ export class ProllyEngine {
   }
 
   capture(label: string): TreeSnapshot {
-    return this.captureDb(this.db, label);
+    const snapshot = this.captureDb(this.db, label, this.engineMetadataChunks);
+    this.engineMetadataChunks ??= snapshot.engineMetadataChunks;
+    return snapshot;
   }
 
-  private captureDb(db: Db, label: string): TreeSnapshot {
+  private captureDb(
+    db: Db,
+    label: string,
+    engineMetadataChunks?: number,
+    snapshotId = this.snapshotId++,
+  ): TreeSnapshot {
     const rows = this.rows(db);
     const catalogHash = String(db.selectValue('SELECT dolt_hashof_catalog()'));
     const bytes = exportDatabase(this.sqlite3.wasm, db.pointer);
@@ -113,12 +125,16 @@ export class ProllyEngine {
     const { root, nodes } = findTableRoot(image.chunks, rows.map((row) => row.key), catalogHash);
     const rootHash = root.hash;
     return {
-      id: this.snapshotId++,
+      id: snapshotId,
       label,
       rootHash,
       root,
       rows,
       nodes,
+      engineMetadataChunks: Math.min(
+        engineMetadataChunks ?? image.chunks.size - nodes.size,
+        image.chunks.size - nodes.size,
+      ),
       chunksInStore: image.chunks.size,
       databaseBytes: bytes.length,
       timestamp: Date.now(),
@@ -147,24 +163,45 @@ export class ProllyEngine {
 
   addSequential(count: number) {
     const first = Number(this.db.selectValue('SELECT COALESCE(MAX(id), 0) + 1 FROM prolly_rows'));
-    this.insertSequential(first, count, 'value');
+    this.insertSequential(this.db, first, count, 'value');
     return this.capture(`Appended ${count} sequential rows`);
   }
 
-  private insertSequential(first: number, count: number, prefix: string) {
+  private insertSequential(db: Db, first: number, count: number, prefix: string) {
     const amount = Math.max(1, Math.trunc(count));
     const last = first + amount - 1;
-    this.db.exec(`WITH RECURSIVE seq(key) AS (
+    db.exec(`WITH RECURSIVE seq(key) AS (
       VALUES(${first}) UNION ALL SELECT key + 1 FROM seq WHERE key < ${last}
     ) INSERT INTO prolly_rows SELECT key, printf('${prefix}-%d', key) FROM seq`);
   }
 
-  private insertLevelRows(first: number, count: number) {
+  private insertLevelRows(db: Db, first: number, count: number) {
     const amount = Math.max(1, Math.trunc(count));
     const last = first + amount - 1;
-    this.db.exec(`WITH RECURSIVE seq(key) AS (
+    db.exec(`WITH RECURSIVE seq(key) AS (
       VALUES(${first}) UNION ALL SELECT key + 1 FROM seq WHERE key < ${last}
     ) INSERT INTO prolly_rows SELECT key, printf('level-%d-%.*c', key, 2048, 'x') FROM seq`);
+  }
+
+  private scratchCopy(rows: RowValue[]) {
+    const scratch = this.openDb();
+    try {
+      this.createSchema(scratch);
+      scratch.exec('BEGIN');
+      try {
+        for (const row of rows) {
+          scratch.exec({ sql: 'INSERT INTO prolly_rows(id, value) VALUES (?, ?)', bind: [row.key, row.value] });
+        }
+        scratch.exec('COMMIT');
+      } catch (cause) {
+        scratch.exec('ROLLBACK');
+        throw cause;
+      }
+      return scratch;
+    } catch (cause) {
+      scratch.close();
+      throw cause;
+    }
   }
 
   addRandom() {
@@ -181,18 +218,29 @@ export class ProllyEngine {
   growUntilSplit(limit = 512, batchSize = 16): GrowthResult {
     const before = this.capture('Before split search');
     const leafCount = leafNodes(before.root).length;
-    let next = Number(this.db.selectValue('SELECT COALESCE(MAX(id), 0) + 1 FROM prolly_rows'));
-    let candidate = before;
-    for (let added = 0; added < limit;) {
-      const amount = Math.min(batchSize, limit - added);
-      this.insertSequential(next, amount, 'split');
-      added += amount;
-      next += amount;
-      candidate = this.capture(`Split after appending ${added} rows`);
-      if (leafNodes(candidate.root).length > leafCount) return { before, after: candidate, added };
+    const first = Number(this.db.selectValue('SELECT COALESCE(MAX(id), 0) + 1 FROM prolly_rows'));
+    const scratch = this.scratchCopy(before.rows);
+    let added = 0;
+    let splitFound = false;
+    try {
+      while (added < limit) {
+        const amount = Math.min(batchSize, limit - added);
+        this.insertSequential(scratch, first + added, amount, 'split');
+        added += amount;
+        const candidate = this.captureDb(scratch, 'Split search candidate', undefined, -1);
+        if (leafNodes(candidate.root).length > leafCount) {
+          splitFound = true;
+          break;
+        }
+      }
+    } finally {
+      scratch.close();
     }
-    candidate.label = `No split after ${limit} inserts`;
-    return { before, after: candidate, added: limit };
+    this.insertSequential(this.db, first, added, 'split');
+    const after = this.capture(splitFound
+      ? `Split after appending ${added} rows`
+      : `No split after ${limit} inserts`);
+    return { before, after, added };
   }
 
   growUntilNextLevel(): GrowthResult {
@@ -201,18 +249,29 @@ export class ProllyEngine {
     if (rootLevel >= 2) throw new Error('Four-level trees exceed the full-node browser rendering limit');
     const limit = rootLevel === 0 ? 512 : 2_000;
     const batchSize = rootLevel === 0 ? 16 : 500;
-    let next = Number(this.db.selectValue('SELECT COALESCE(MAX(id), 0) + 1 FROM prolly_rows'));
-    let candidate = before;
-    for (let added = 0; added < limit;) {
-      const amount = Math.min(batchSize, limit - added);
-      this.insertLevelRows(next, amount);
-      added += amount;
-      next += amount;
-      candidate = this.capture(`Reached level ${rootLevel + 1} after appending ${added} rows`);
-      if (candidate.root.level > rootLevel) return { before, after: candidate, added };
+    const first = Number(this.db.selectValue('SELECT COALESCE(MAX(id), 0) + 1 FROM prolly_rows'));
+    const scratch = this.scratchCopy(before.rows);
+    let added = 0;
+    let levelFound = false;
+    try {
+      while (added < limit) {
+        const amount = Math.min(batchSize, limit - added);
+        this.insertLevelRows(scratch, first + added, amount);
+        added += amount;
+        const candidate = this.captureDb(scratch, 'Level search candidate', undefined, -1);
+        if (candidate.root.level > rootLevel) {
+          levelFound = true;
+          break;
+        }
+      }
+    } finally {
+      scratch.close();
     }
-    candidate.label = `No new level after ${limit} inserts`;
-    return { before, after: candidate, added: limit };
+    this.insertLevelRows(this.db, first, added);
+    const after = this.capture(levelFound
+      ? `Reached level ${rootLevel + 1} after appending ${added} rows`
+      : `No new level after ${limit} inserts`);
+    return { before, after, added };
   }
 
   garbageCollect(): GarbageCollectionResult {
@@ -238,6 +297,7 @@ export class ProllyEngine {
       if (head.rootHash !== beforeRoot) throw new Error('HEAD root changed during garbage collection');
       const previous = this.db;
       this.db = replacement;
+      this.engineMetadataChunks = head.engineMetadataChunks;
       previous.close();
       return {
         head,
@@ -257,6 +317,7 @@ export class ProllyEngine {
     this.db.close();
     this.db = this.openDb();
     this.snapshotId = 0;
+    this.engineMetadataChunks = undefined;
     this.createSchema();
     return this.seed(count);
   }
@@ -295,6 +356,7 @@ export class ProllyEngine {
           root,
           rows,
           nodes,
+          engineMetadataChunks: image.chunks.size - nodes.size,
           chunksInStore: image.chunks.size,
           databaseBytes: bytes.length,
           timestamp: Date.now(),

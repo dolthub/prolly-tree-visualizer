@@ -23,7 +23,7 @@ function snapshot(id: number, root: ProllyNode): TreeSnapshot {
   };
   visit(root);
   const rows = [...nodes.values()].filter((node) => node.level === 0).flatMap((node) => node.entries.map((entry) => ({ key: Number(entry.key), value: `v${entry.key}` })));
-  return { id, label: '', rootHash: root.hash, root, rows, nodes, chunksInStore: nodes.size, databaseBytes: 0, timestamp: 0 };
+  return { id, label: '', rootHash: root.hash, root, rows, nodes, engineMetadataChunks: 0, chunksInStore: nodes.size, databaseBytes: 0, timestamp: 0 };
 }
 
 function root(hash: string, children: ProllyNode[]): ProllyNode {

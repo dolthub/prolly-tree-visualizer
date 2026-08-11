@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateVersionStorage, countHistoricalTreeChunks } from './storage';
+import { calculatePhysicalChunkMakeup, calculateVersionStorage, countHistoricalTreeChunks } from './storage';
 
 describe('calculateVersionStorage', () => {
   it('counts shared addresses once across versions', () => {
@@ -36,5 +36,31 @@ describe('calculateVersionStorage', () => {
     ];
 
     expect(countHistoricalTreeChunks(versions)).toBe(4);
+  });
+});
+
+describe('calculatePhysicalChunkMakeup', () => {
+  it('classifies hidden intermediate table states as historical tree chunks', () => {
+    expect(calculatePhysicalChunkMakeup({
+      nodes: new Map([['head-root', null], ['head-leaf', null]]),
+      engineMetadataChunks: 4,
+      chunksInStore: 23,
+    })).toEqual({
+      liveTableChunks: 2,
+      historicalChunks: 17,
+      metadataChunks: 4,
+    });
+  });
+
+  it('bounds inconsistent physical counts without producing negative categories', () => {
+    expect(calculatePhysicalChunkMakeup({
+      nodes: new Map([['head-root', null], ['head-leaf', null]]),
+      engineMetadataChunks: 99,
+      chunksInStore: 1,
+    })).toEqual({
+      liveTableChunks: 1,
+      historicalChunks: 0,
+      metadataChunks: 0,
+    });
   });
 });
