@@ -588,7 +588,7 @@ function App() {
             {([
               ['tree', 'Tree'],
               ['diff', `Fast diff${metrics.diff.rowDiffs.length ? ` · ${metrics.diff.rowDiffs.length}` : ''}`],
-              ['storage', 'Storage'],
+              ['storage', 'Shared storage'],
               ['order', 'History independence'],
               ['chunks', `Chunk boundaries · ${metrics.leaves.length}`],
             ] as [Tab, string][]).map(([id, label]) => (
@@ -704,7 +704,7 @@ function App() {
           <section className="panel-view storage-view">
             <div className="data-view-head storage-head">
               <div>
-                <h2>Storage <InfoTip>Counts here cover the live chunks in the visualized prolly tree. The physical DoltLite store also contains catalogs and engine metadata.</InfoTip></h2>
+                <h2>Shared storage <InfoTip>Counts here cover the live chunks in the visualized prolly tree. The physical DoltLite store also contains catalogs and engine metadata.</InfoTip></h2>
                 <span>{storageMetrics.versions} {storageMetrics.versions === 1 ? 'version' : 'versions'}</span>
               </div>
               <div className="storage-actions">
