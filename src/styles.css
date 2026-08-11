@@ -49,6 +49,9 @@ code { font-family: var(--mono); }
 .runtime-pill:hover { border-color: var(--accent); }
 .runtime-pill img { display: block; width: 86px; height: auto; }
 .runtime-pill b { border-left: 1px solid #3b4b72; padding-left: 9px; color: var(--accent); font-weight: 500; }
+.repository-link { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border: 1px solid rgba(255, 255, 255, .12); border-radius: 5px; color: #fff; text-decoration: none; transition: border-color .15s ease, background-color .15s ease, color .15s ease, transform .15s ease; }
+.repository-link svg { width: 20px; height: 20px; fill: currentColor; }
+.repository-link:hover { border-color: rgba(81, 203, 238, .65); background: rgba(81, 203, 238, .12); color: var(--accent); transform: translateY(-1px); }
 
 .database-summary { padding: 28px 4vw 18px; }
 .eyebrow { display: block; color: var(--brand); font-size: 11px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
