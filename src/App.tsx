@@ -881,7 +881,6 @@ function App() {
       {tab !== 'order' && <footer>
         <div className="footer-meta">
           <span>Runs entirely in your browser. No database server, no simulated tree.</span>
-          <span>Console: <code>window.db</code> · <code>refreshProllyTree()</code></span>
           <a href="https://www.dolthub.com/docs/architecture/storage-engine/prolly-tree/" target="_blank" rel="noreferrer">Read more about Prolly Trees</a>
           <span>DoltLite format v12 · {current.databaseBytes.toLocaleString()} B exported · {current.chunksInStore} stored chunks</span>
         </div>
