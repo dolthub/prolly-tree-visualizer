@@ -79,7 +79,8 @@ code { font-family: var(--mono); }
 .control-deck .control-tab { height: 34px; min-width: 92px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); }
 .control-deck .control-tab.active { background: #fff; color: var(--ink); box-shadow: 0 1px 4px rgba(24, 33, 52, .12); }
 .control-deck button:hover:not(:disabled) { border-color: #9ca6a1; transform: translateY(-1px); }
-.control-deck button:disabled { opacity: .5; cursor: wait; }
+.control-deck button:disabled { opacity: .5; cursor: not-allowed; }
+.control-deck.controls-busy button:disabled { cursor: wait; }
 .control-deck button[title]:disabled { cursor: not-allowed; }
 .control-deck .primary-button { color: #fff; background: var(--brand); border-color: var(--brand); }
 .control-deck .danger-quiet { color: #a44734; }

@@ -519,7 +519,7 @@ function App() {
         </div>
       </section>
 
-      <section className="control-deck">
+      <section className={busy ? 'control-deck controls-busy' : 'control-deck'}>
         <div className="control-tabs" role="tablist" aria-label="Tree controls">
           <button className={controlMode === 'modify' ? 'control-tab active' : 'control-tab'} role="tab" aria-selected={controlMode === 'modify'} aria-controls="modify-controls" onClick={() => { resetTreeState(); setControlMode('modify'); }}>Modify</button>
           <button className={controlMode === 'lookup' ? 'control-tab active' : 'control-tab'} role="tab" aria-selected={controlMode === 'lookup'} aria-controls="lookup-controls" onClick={() => { resetTreeState(); setControlMode('lookup'); }}>Lookup</button>
