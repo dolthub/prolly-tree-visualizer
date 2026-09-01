@@ -12,6 +12,7 @@ import { LookupDetailsPanel, type LookupDetails } from './components/LookupDetai
 import { MutationCostPanel } from './components/MutationCostPanel';
 import { NodeInspector } from './components/NodeInspector';
 import { TreeCanvas } from './components/TreeCanvas';
+import doltLiteLogo from './assets/doltlite-logo.png';
 import doltHubLogo from './assets/dolthub-logo.svg';
 
 type Tab = 'tree' | 'diff' | 'chunks' | 'storage' | 'order';
@@ -495,7 +496,7 @@ function App() {
         </div>
         <a className="runtime-pill" href="https://github.com/dolthub/doltlite" target="_blank" rel="noreferrer">
           <span>Powered by</span>
-          <img src="https://raw.githubusercontent.com/dolthub/doltlite/master/doltlite-logo.png" alt="DoltLite" />
+          <img src={doltLiteLogo} alt="DoltLite" />
           <b>{engineRef.current?.version}</b>
         </a>
         <a
